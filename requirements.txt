@@ -1,0 +1,7 @@
+aiogram==3.10.0
+google-generativeai>=0.8.4
+Pillow
+asyncio
+datetime
+apscheduler
+pytz
