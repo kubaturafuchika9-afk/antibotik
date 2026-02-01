@@ -1,204 +1,152 @@
 import os
 import asyncio
 import logging
-import sys
-import tempfile
-from io import BytesIO
-
 import uvicorn
 from fastapi import FastAPI
-import aiohttp
-from PIL import Image
-
-from aiogram import Bot, Dispatcher, types
-from aiogram.enums import ParseMode
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.enums import ChatType
+from io import BytesIO
 
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # --- КОНФИГУРАЦИЯ ---
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-GOOGLE_KEY = os.getenv("GOOGLE_API_KEY")
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+PORT = int(os.getenv("PORT", 8080))
 
-# Настройка Google Gemini
-genai.configure(api_key=GOOGLE_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
-# Настройка генерации
+# СТРОГО указанная модель
+MODEL_NAME = "gemini-flash-latest"
+
 generation_config = {
-  "temperature": 0.7,
-  "top_p": 0.95,
-  "top_k": 64,
-  "max_output_tokens": 8192,
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "top_k": 64,
+    "max_output_tokens": 8192,
 }
 
-# Инициализация модели строго с указанным именем
-# Внимание: если Google изменит алиас, код вернет ошибку, но требование "gemini-flash-latest" выполнено.
+# Отключаем фильтры безопасности
+safety_settings = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
+
 model = genai.GenerativeModel(
-  model_name="gemini-flash-latest",
-  generation_config=generation_config,
-  system_instruction="Ты полезный помощник в Telegram. Ты умеешь слушать голосовые и смотреть фото. Отвечай кратко, емко и с юмором."
+    model_name=MODEL_NAME,
+    generation_config=generation_config,
+    safety_settings=safety_settings
 )
 
-# Инициализация Бота
-bot = Bot(token=TOKEN, parse_mode=ParseMode.MARKDOWN)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 app = FastAPI()
 
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+# --- WEB SERVER (PING PONG) ---
+@app.get("/")
+async def health_check():
+    return {"status": "alive", "message": "Bot is running with gemini-flash-latest"}
 
-# --- ЛОГИКА БОТА ---
+@app.head("/")
+async def head_check():
+    return {"status": "alive"}
 
-async def is_addressed_to_bot(message: Message, bot_user: types.User):
-    """Проверка: адресовано ли сообщение боту"""
-    if message.chat.type == "private":
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+async def is_message_for_me(message: types.Message):
+    if message.chat.type == ChatType.PRIVATE:
         return True
+    
+    bot_user = await bot.get_me()
+    
     if message.reply_to_message and message.reply_to_message.from_user.id == bot_user.id:
         return True
-    if message.text and f"@{bot_user.username}" in message.text:
-        return True
-    if message.caption and f"@{bot_user.username}" in message.caption:
-        return True
+    
+    if message.entities:
+        for entity in message.entities:
+            if entity.type == "mention":
+                if bot_user.username in message.text:
+                    return True
     return False
+
+async def send_to_gemini(prompt_parts):
+    try:
+        response = await model.generate_content_async(prompt_parts)
+        return response.text
+    except Exception as e:
+        logging.error(f"Error Gemini: {e}")
+        return f"Ошибка API: {e}"
 
 # --- ХЕНДЛЕРЫ ---
 
 @dp.message(CommandStart())
-async def command_start_handler(message: Message):
-    await message.answer("Привет! Я работаю на Gemini Flash. Кидай голосовые, фото или текст.")
+async def cmd_start(message: types.Message):
+    await message.answer("Привет! Я готов к работе.")
 
 @dp.message()
-async def main_handler(message: Message):
-    bot_user = await bot.get_me()
-    
-    # 1. Проверка адресации
-    if not await is_addressed_to_bot(message, bot_user):
+async def handle_all_messages(message: types.Message):
+    if not await is_message_for_me(message):
         return
 
-    # Сообщение о том, что бот "думает"
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    prompt_parts = [] # Сюда складываем контент для Gemini (текст, файлы)
-    temp_files_to_delete = [] # Список временных файлов для очистки
+    prompt_parts = []
+    user_text = message.text or message.caption or ""
+
+    # Обработка фото
+    if message.photo:
+        photo = message.photo[-1]
+        photo_file = await bot.download(photo, destination=BytesIO())
+        photo_data = photo_file.getvalue()
+        
+        prompt_parts.append({
+            "mime_type": "image/jpeg",
+            "data": photo_data
+        })
+        if not user_text:
+            user_text = "Что на фото?"
+
+    # Обработка голосовых
+    elif message.voice:
+        voice_file = await bot.get_file(message.voice.file_id)
+        voice_io = await bot.download_file(voice_file.file_path, destination=BytesIO())
+        voice_data = voice_io.getvalue()
+        
+        prompt_parts.append({
+            "mime_type": "audio/ogg",
+            "data": voice_data
+        })
+        if not user_text:
+            user_text = "Ответь на это голосовое сообщение."
+
+    if user_text:
+        prompt_parts.append(user_text)
+
+    if not prompt_parts:
+        return
 
     try:
-        # --- ОБРАБОТКА ТЕКСТА ---
-        text_content = ""
-        if message.text:
-            text_content = message.text.replace(f"@{bot_user.username}", "").strip()
-        elif message.caption:
-            text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
-        
-        if text_content:
-            prompt_parts.append(text_content)
-
-        # --- ОБРАБОТКА ФОТО ---
-        if message.photo:
-            photo_id = message.photo[-1].file_id
-            file_info = await bot.get_file(photo_id)
-            
-            # Скачиваем фото в память
-            img_data = BytesIO()
-            await bot.download_file(file_info.file_path, img_data)
-            img_data.seek(0)
-            
-            # Конвертируем в PIL Image (Gemini принимает их напрямую)
-            image = Image.open(img_data)
-            prompt_parts.append(image)
-
-        # --- ОБРАБОТКА ГОЛОСОВОГО ---
-        if message.voice:
-            # Gemini понимает аудио, но нужно загрузить через File API
-            file_id = message.voice.file_id
-            file_info = await bot.get_file(file_id)
-            
-            # Создаем временный файл, так как genai.upload_file требует путь
-            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
-                await bot.download_file(file_info.file_path, destination=temp_audio.name)
-                temp_path = temp_audio.name
-            
-            temp_files_to_delete.append(temp_path)
-
-            # Загружаем файл в Google AI Studio (File API)
-            # mime_type="audio/ogg" поддерживается Gemini Flash
-            uploaded_file = genai.upload_file(path=temp_path, mime_type="audio/ogg")
-            
-            # Ждем завершения обработки файла (обычно для аудио это мгновенно, но хорошая практика)
-            while uploaded_file.state.name == "PROCESSING":
-                await asyncio.sleep(1)
-                uploaded_file = genai.get_file(uploaded_file.name)
-
-            prompt_parts.append(uploaded_file)
-            prompt_parts.append("Послушай это голосовое сообщение и ответь на него.")
-
-        # --- ГЕНЕРАЦИЯ ОТВЕТА ---
-        if not prompt_parts:
-            # Если пустой запрос (странно, но бывает)
-            await message.reply("Я не вижу содержимого (текста, фото или голоса).")
-            return
-
-        response = await model.generate_content_async(prompt_parts)
-        
-        # Отправляем ответ
-        if response.text:
-            await message.reply(response.text)
-        else:
-            await message.reply("Gemini что-то пробурчал, но текста не вернул. Попробуй еще раз.")
-
+        response_text = await send_to_gemini(prompt_parts)
+        await message.reply(response_text, parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Error generation: {e}")
-        await message.reply("Ошибка обработки. Возможно, файл слишком большой или Google API устал.")
-    
-    finally:
-        # Очистка временных файлов с диска сервера
-        for f_path in temp_files_to_delete:
-            try:
-                os.remove(f_path)
-            except:
-                pass
-
-# --- WEB SERVER & PING PONG (для Render) ---
-
-@app.get("/")
-async def root():
-    return {"status": "Gemini Bot Active"}
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
-
-async def keep_alive_ping():
-    if not RENDER_URL:
-        return
-    while True:
-        await asyncio.sleep(600) # 10 минут
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{RENDER_URL}/health") as resp:
-                    logging.info(f"Ping sent. Status: {resp.status}")
-        except Exception as e:
-            logging.error(f"Ping failed: {e}")
+        await message.reply(f"Ошибка: {e}")
 
 # --- ЗАПУСК ---
-
 async def start_bot():
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
-async def start_server():
-    config = uvicorn.Config(app, host="0.0.0.0", port=10000, log_level="error")
-    server = uvicorn.Server(config)
-    await server.serve()
-
 async def main():
-    await asyncio.gather(
-        start_server(),
-        start_bot(),
-        keep_alive_ping()
-    )
+    config = uvicorn.Config(app, host="0.0.0.0", port=PORT)
+    server = uvicorn.Server(config)
+    await asyncio.gather(server.serve(), start_bot())
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
