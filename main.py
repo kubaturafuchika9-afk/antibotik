@@ -36,7 +36,7 @@ generation_config = {
 
 # Инициализация модели
 model = genai.GenerativeModel(
-  model_name="gemini-flash-latest",
+  model_name="gemini-1.5-flash",
   generation_config=generation_config,
   system_instruction="Ты полезный помощник в Telegram. Ты умеешь слушать голосовые и смотреть фото. Отвечай кратко, емко и с юмором. Материшь в ответ тех, кто тебя оскорбляет. Не переносишь сторонников Трампа и США на дух, если попалась такая тема. Можешь жестко и коротко подколоть человека."
 )
