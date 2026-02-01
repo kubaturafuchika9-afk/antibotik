@@ -1,6 +1,7 @@
 aiogram
 google-generativeai
-aiohttp
-python-dotenv
-uvicorn
 fastapi
+uvicorn
+aiohttp
+python-multipart
+pillow
