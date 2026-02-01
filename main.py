@@ -26,45 +26,11 @@ RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 # Настройка Google Gemini
 genai.configure(api_key=GOOGLE_KEY)
 
-# --- 🛡 ЛОГИКА ЗАЩИТЫ (АДАПТИРОВАННАЯ ПОД LITE) ---
+# --- ЖЕСТКАЯ ПРИВЯЗКА К 1.5 FLASH ---
+# Это единственная модель с лимитом 1500 запросов/день.
+# Мы используем её, даже если list_models() её не показывает.
+MODEL_ID = "gemini-1.5-flash"
 
-# Мы вынуждены разрешить 2.0, но ТОЛЬКО Lite версию.
-# Обычная 2.0 Flash имеет лимит 0, поэтому мы её баним.
-FORBIDDEN_KEYWORDS = [
-    "latest",       # Плавающий тег
-    "gemini-2.5",   # Лимит 20
-    "gemini-3",     # Будущие
-    "pro",          # Мало лимитов
-    "ultra",        # Платно
-    "exp"           # Экспериментальные (нестабильные)
-]
-
-# Наша новая цель - Lite версия
-SAFE_MODEL = "gemini-2.0-flash-lite-001"
-
-# Модель, которую запрашиваем
-REQUESTED_MODEL = "gemini-2.0-flash-lite-001"
-
-def get_safe_model_name(requested: str) -> str:
-    # 1. Сначала проверяем на явный запрет слов
-    for ban_word in FORBIDDEN_KEYWORDS:
-        if ban_word in requested:
-            print(f"🛡 БЛОКИРОВКА: Модель '{requested}' содержит запрещенное слово '{ban_word}'.")
-            return SAFE_MODEL
-    
-    # 2. Дополнительная защита: Если это 2.0, то ОБЯЗАТЕЛЬНО должна быть Lite
-    if "gemini-2.0" in requested and "lite" not in requested:
-        print(f"🛡 БЛОКИРОВКА: Обычная версия 2.0 имеет плохие лимиты. Переключаю на Lite.")
-        return SAFE_MODEL
-
-    return requested
-
-# Итоговая модель
-FINAL_MODEL_ID = get_safe_model_name(REQUESTED_MODEL)
-
-print(f"✅ ЗАПУСК НА МОДЕЛИ: {FINAL_MODEL_ID}")
-
-# --- НАСТРОЙКА GEMINI ---
 generation_config = {
   "temperature": 0.7,
   "top_p": 0.95,
@@ -73,7 +39,7 @@ generation_config = {
 }
 
 model = genai.GenerativeModel(
-  model_name=FINAL_MODEL_ID,
+  model_name=MODEL_ID,
   generation_config=generation_config,
   system_instruction="Ты полезный помощник в Telegram. Ты умеешь слушать голосовые и смотреть фото. Отвечай кратко, емко и с юмором."
 )
@@ -105,12 +71,7 @@ async def is_addressed_to_bot(message: Message, bot_user: types.User):
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message):
-    await message.answer(
-        f"🛡 **System Online**\n"
-        f"Model: `{FINAL_MODEL_ID}`\n"
-        f"Status: **Lite Mode**\n\n"
-        f"Привет! 1.5 R.I.P., пробуем Lite версию."
-    )
+    await message.answer(f"♻️ Попытка запуска на классике: `{MODEL_ID}`")
 
 @dp.message()
 async def main_handler(message: Message):
@@ -161,10 +122,10 @@ async def main_handler(message: Message):
                 uploaded_file = genai.get_file(uploaded_file.name)
 
             prompt_parts.append(uploaded_file)
-            prompt_parts.append("Послушай это аудио и ответь.")
+            prompt_parts.append("Послушай аудио и ответь.")
 
         if not prompt_parts:
-            await message.reply("Я не вижу содержимого.")
+            await message.reply("Пусто.")
             return
 
         # ГЕНЕРАЦИЯ
@@ -177,14 +138,13 @@ async def main_handler(message: Message):
 
     except Exception as e:
         logging.error(f"Error: {e}")
-        err_text = str(e)
-        
-        if "429" in err_text:
-             await message.reply(f"💀 Даже Lite версия перегружена (429). Google жестит.")
-        elif "404" in err_text:
-             await message.reply("❌ Модель не найдена.")
+        err_msg = str(e)
+        if "404" in err_msg:
+             await message.reply(f"❌ Модель {MODEL_ID} недоступна для этого ключа. Нужен новый аккаунт.")
+        elif "429" in err_msg:
+             await message.reply(f"💀 Лимит исчерпан даже на {MODEL_ID}.")
         else:
-             await message.reply("Ошибка системы.")
+             await message.reply(f"Ошибка: {e}")
     
     finally:
         for f_path in temp_files_to_delete:
@@ -193,11 +153,11 @@ async def main_handler(message: Message):
             except:
                 pass
 
-# --- WEB SERVER ---
+# --- SERVER ---
 
 @app.get("/")
 async def root():
-    return {"status": "Alive", "model": FINAL_MODEL_ID}
+    return {"status": "Alive", "model": MODEL_ID}
 
 @app.get("/health")
 async def health_check():
