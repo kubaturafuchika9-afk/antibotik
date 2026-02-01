@@ -41,7 +41,7 @@ app = FastAPI()
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# --- ЛОГИКА ПРИОРИТЕТОВ (ИСПРАВЛЕНА) ---
+# --- ЛОГИКА АВТО-ПОДБОРА МОДЕЛИ ---
 
 def get_dynamic_model_list():
     print("📡 Запрашиваю список моделей...")
@@ -53,10 +53,9 @@ def get_dynamic_model_list():
                 if "gemini" in name:
                     available_models.append(name)
     except Exception as e:
-        print(f"⚠️ Ошибка списка: {e}")
+        print(f"⚠️ Ошибка получения списка: {e}")
     
-    # Добавляем скрытые, которые хотим проверить принудительно
-    # gemini-1.5-flash-8b - это новая легкая модель, часто с хорошим лимитом
+    # Добавляем скрытые модели для проверки
     hardcoded = ["gemini-exp-1206", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
     for h in hardcoded:
         if h not in available_models:
@@ -65,28 +64,20 @@ def get_dynamic_model_list():
     return list(set(available_models))
 
 def sort_models_priority(models):
-    """
-    Здесь мы задаем 'вкусность' модели.
-    Чем больше баллов, тем раньше бот её попробует.
-    """
     def score(name):
         s = 0
-        # 1. САМЫЙ ТОП: Экспериментальные (обычно безлимит для тестов)
+        # 1. Приоритет: Экспериментальные (обычно безлимит)
         if "exp" in name: s += 500
-        
-        # 2. Надежные рабочие лошадки
-        if "1.5-flash" in name: s += 300
-        
-        # 3. Новая супер-легкая (должна быть дешевой)
+        # 2. Flash (быстро)
+        if "flash" in name: s += 300
+        if "1.5" in name: s += 50
+        # 3. Легкие версии
         if "8b" in name: s += 250
-        
-        # 4. Lite версии (как мы выяснили, 2.0-lite может быть с подвохом, поэтому ниже)
         if "lite" in name: s += 100
         
-        # ШТРАФЫ
-        if "pro" in name: s -= 50        # Pro быстро кончается
-        if "preview" in name: s -= 20    # Preview часто имеют лимит 20/день (как ты заметил)
-        
+        # Штрафы
+        if "pro" in name: s -= 50
+        if "preview" in name: s -= 20 # У них часто лимит 20/день
         return s
 
     return sorted(models, key=score, reverse=True)
@@ -104,22 +95,16 @@ async def find_best_working_model():
         try:
             test_model = genai.GenerativeModel(
                 model_name=model_name,
-                generation_config=generation_config
+                generation_config=generation_config,
+                system_instruction="Ты полезный помощник в Telegram. Ты умеешь слушать голосовые и смотреть фото. Отвечай кратко, емко и с юмором."
             )
-            # Проверяем "пинг"
+            # Пинг
             response = await test_model.generate_content_async("ping")
             
             if response and response.text:
                 print("✅ ЖИВАЯ! Подключаюсь.")
                 ACTIVE_MODEL = test_model
                 ACTIVE_MODEL_NAME = model_name
-                
-                # Устанавливаем системную инструкцию уже для рабочей модели
-                ACTIVE_MODEL = genai.GenerativeModel(
-                    model_name=model_name,
-                    generation_config=generation_config,
-                    system_instruction="Ты полезный помощник в Telegram. Ты умеешь слушать голосовые и смотреть фото. Отвечай кратко, емко и с юмором."
-                )
                 return True
                 
         except Exception as e:
@@ -131,22 +116,30 @@ async def find_best_working_model():
     print("💀 Все модели недоступны.")
     return False
 
-# --- ОБРАБОТЧИКИ ---
+# --- ВАЖНАЯ ФУНКЦИЯ (КОТОРАЯ ПОТЕРЯЛАСЬ) ---
+
+async def is_addressed_to_bot(message: Message, bot_user: types.User):
+    """Проверяет, адресовано ли сообщение боту."""
+    if message.chat.type == "private":
+        return True
+    if message.reply_to_message and message.reply_to_message.from_user.id == bot_user.id:
+        return True
+    if message.text and f"@{bot_user.username}" in message.text:
+        return True
+    if message.caption and f"@{bot_user.username}" in message.caption:
+        return True
+    return False
+
+# --- ХЕНДЛЕРЫ ---
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message):
     status = f"✅ Модель: `{ACTIVE_MODEL_NAME}`" if ACTIVE_MODEL else "💀 Нет связи с AI"
-    # Добавляем пояснение про лимиты
-    if "exp" in str(ACTIVE_MODEL_NAME):
-        status += "\n(Экспериментальная версия - лимиты должны быть ок)"
-    elif "preview" in str(ACTIVE_MODEL_NAME):
-        status += "\n⚠️ Внимание: Preview версия, возможен лимит 20/день."
-        
     await message.answer(f"🤖 **Bot Reloaded**\n{status}")
 
 @dp.message()
 async def main_handler(message: Message):
-    # Lazy loading: если при старте не вышло, пробуем сейчас
+    # Если при старте не нашли модель, пробуем найти сейчас
     if not ACTIVE_MODEL:
         await message.answer("🔄 Ищу живую модель...")
         if not await find_best_working_model():
@@ -154,6 +147,8 @@ async def main_handler(message: Message):
             return
 
     bot_user = await bot.get_me()
+    
+    # Вот здесь была ошибка, теперь функция определена выше
     if not await is_addressed_to_bot(message, bot_user):
         return
 
@@ -198,7 +193,7 @@ async def main_handler(message: Message):
             prompt_parts.append("Послушай и ответь.")
 
         if not prompt_parts:
-            await message.reply("Пусто.")
+            # Пустое сообщение не требует ответа
             return
 
         response = await ACTIVE_MODEL.generate_content_async(prompt_parts)
@@ -210,11 +205,10 @@ async def main_handler(message: Message):
 
     except Exception as e:
         logging.error(f"Gen Error: {e}")
-        # Авто-смена модели при ошибке
+        # Если модель отвалилась (лимит 429), пробуем найти другую
         if "429" in str(e) or "404" in str(e):
-             await message.reply(f"⚠️ Модель {ACTIVE_MODEL_NAME} кончилась. Ищу другую...")
+             await message.reply(f"⚠️ Модель {ACTIVE_MODEL_NAME} всё. Ищу замену...")
              if await find_best_working_model():
-                 # Рекурсивный повтор (один раз) можно добавить, но пока просто уведомляем
                  await message.reply(f"✅ Перешел на {ACTIVE_MODEL_NAME}. Повтори сообщение.")
              else:
                  await message.reply("💀 Больше рабочих моделей нет.")
