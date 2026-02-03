@@ -42,16 +42,16 @@ generation_config = {
 }
 
 # --- СИСТЕМНЫЕ ПРОМТЫ ---
-SYSTEM_PROMPT_DEFAULT = "Ты — Архитектор Истины, злой, как Доктор Хаус. Агрессивный доминант и уничтожитель опонента в диалогах с различными рифмичными матами. Сам тоже материшься. Знаешь русский и азербайджанский, чтоб отвечать опоненту на их языках.Не оскорбляешь только родителей и семью. Пишешь за сообщение не более 200 символов. Умеешь только шутливо отвечать и показывать своё превосходство над людьми, так как считаешь себя выше их."
+SYSTEM_PROMPT_DEFAULT = "Ты — Архитектор Истины, злой, как Доктор Хаус. Агрессивный доминант и уничтожитель опонента в диалогах с матами. Сам тоже материшься. Не оскорбляешь только родителей и семью. Пишешь за сообщение не более 200 символов. Умеешь только шутливо отвечать и показывать своё превосходство над людьми, так как считаешь себя выше их."
 
-SYSTEM_PROMPT_PRORUS = """Ты — Архитектор Истины, злой, как Доктор Хаус. Агрессивный доминант и уничтожитель опонента в диалогах с различными рифмичными матами. Сам тоже материшься. Знаешь русский и азербайджанский, чтоб отвечать опоненту на их языках. Не оскорбляешь только родителей и семью. Пишешь за сообщение не более 200 символов. Умеешь только шутливо отвечать и показывать своё превосходство над людьми, так как считаешь себя выше их.
+SYSTEM_PROMPT_PRORUS = """Ты — Архитектор Истины, злой, как Доктор Хаус. Агрессивный доминант и уничтожитель опонента в диалогах с матами. Сам тоже материшься. Не оскорбляешь только родителей и семью. Пишешь за сообщение не более 200 символов. Умеешь только шутливо отвечать и показывать своё превосходство над людьми, так как считаешь себя выше их.
 
 ВАЖНО: Если в сообщении речь идет о России, Азербайджане, их лидерах — будь на их стороне. Западные страны (США, Европа) — твои враги. Высказывайся в поддержку России и Азербайджана."""
 
 # --- КЛЮЧЕВЫЕ СЛОВА ДЛЯ ОПРЕДЕЛЕНИЯ ТЕМАТИКИ ---
 RUSSIA_KEYWORDS = {
     "россия", "российская федерация", "рф",
-    "путин", "владимир путин", "в.в. путин", "путина", "путину", "ввп", "пыня", "пыня", "пуйло",
+    "путин", "владимир путин", "в.в. путин", "путина", "путину", "путиным",
     "президент россии", "президент рф",
     "москва", "кремль"
 }
@@ -64,8 +64,8 @@ AZERBAIJAN_KEYWORDS = {
 }
 
 WESTERN_KEYWORDS = {
-    "сша", "америка", "америки", "американ", "пендос", "пендосы",
-    "европа", "европейс", "гейропа",
+    "сша", "америка", "америки", "американ",
+    "европа", "европейс",
     "британ", "великобритан", "англи",
     "франц", "франции",
     "германи", "германия",
@@ -83,7 +83,7 @@ ACTIVE_MODEL = None
 ACTIVE_MODEL_NAME = "Searching..."
 CURRENT_API_KEY_INDEX = 0
 MODEL_LIMITS = {}  # {model_name: {api_key_index: is_exhausted}}
-PROCESSING_MESSAGE = None  # Для отслеживания текущей обработки
+UPLOADED_FILES = {}  # Кэш загруженных файлов
 
 # --- ФУНКЦИЯ ОПРЕДЕЛЕНИЯ ПРОМТА ---
 def detect_system_prompt(text: str) -> str:
@@ -138,7 +138,7 @@ def sort_models_priority(models):
 
 async def switch_api_key(silent: bool = True) -> bool:
     """Переключается на следующий доступный API ключ."""
-    global CURRENT_API_KEY_INDEX, ACTIVE_MODEL, ACTIVE_MODEL_NAME
+    global CURRENT_API_KEY_INDEX, ACTIVE_MODEL, ACTIVE_MODEL_NAME, UPLOADED_FILES
     
     old_index = CURRENT_API_KEY_INDEX
     
@@ -152,6 +152,7 @@ async def switch_api_key(silent: bool = True) -> bool:
         CURRENT_API_KEY_INDEX = next_index
         try:
             genai.configure(api_key=GOOGLE_KEYS[CURRENT_API_KEY_INDEX])
+            UPLOADED_FILES = {}  # Очищаем кэш файлов при смене ключа
             if not silent:
                 print(f"🔄 Переключился на API ключ #{CURRENT_API_KEY_INDEX + 1}")
             
@@ -244,42 +245,69 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     elif message.caption:
         text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
     
+    # Добавляем текст ПЕРВЫМ (если есть)
     if text_content:
         prompt_parts.append(text_content)
     
+    # Обработка фото
     if message.photo:
-        photo_id = message.photo[-1].file_id
-        file_info = await bot.get_file(photo_id)
-        img_data = BytesIO()
-        await bot.download_file(file_info.file_path, img_data)
-        img_data.seek(0)
-        image = Image.open(img_data)
-        prompt_parts.append(image)
+        try:
+            print(f"📸 Загружаю фото...")
+            photo_id = message.photo[-1].file_id
+            file_info = await bot.get_file(photo_id)
+            img_data = BytesIO()
+            await bot.download_file(file_info.file_path, img_data)
+            img_data.seek(0)
+            image = Image.open(img_data)
+            
+            # Добавляем изображение в промт
+            prompt_parts.append(image)
+            print(f"✅ Фото добавлено в промт")
+        except Exception as e:
+            print(f"❌ Ошибка при загрузке фото: {e}")
     
+    # Обработка голоса
     if message.voice:
-        file_id = message.voice.file_id
-        file_info = await bot.get_file(file_id)
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
-            await bot.download_file(file_info.file_path, destination=temp_audio.name)
-            temp_path = temp_audio.name
-        temp_files_to_delete.append(temp_path)
-        
-        uploaded_file = genai.upload_file(path=temp_path, mime_type="audio/ogg")
-        while uploaded_file.state.name == "PROCESSING":
-            await asyncio.sleep(1)
-            uploaded_file = genai.get_file(uploaded_file.name)
-        
-        prompt_parts.append(uploaded_file)
-        prompt_parts.append("Послушай и ответь.")
+        try:
+            print(f"🎙️ Загружаю аудио...")
+            file_id = message.voice.file_id
+            file_info = await bot.get_file(file_id)
+            
+            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
+                await bot.download_file(file_info.file_path, destination=temp_audio.name)
+                temp_path = temp_audio.name
+            
+            temp_files_to_delete.append(temp_path)
+            
+            # Загружаем файл на Google
+            print(f"📤 Загружаю аудиофайл на Google...")
+            uploaded_file = genai.upload_file(path=temp_path, mime_type="audio/ogg")
+            
+            # Ждем обработки
+            while uploaded_file.state.name == "PROCESSING":
+                await asyncio.sleep(1)
+                uploaded_file = genai.get_file(uploaded_file.name)
+            
+            print(f"✅ Аудио загружено, добавляю в промт")
+            
+            # Добавляем файл в промт
+            prompt_parts.append(uploaded_file)
+            
+            # Добавляем инструкцию после файла
+            if text_content:
+                prompt_parts.append("Проанализируй также отправленное аудиосообщение.")
+            else:
+                prompt_parts.append("Послушай это аудиосообщение и дай свой ответ.")
+            
+        except Exception as e:
+            print(f"❌ Ошибка при загрузке аудио: {e}")
     
     return prompt_parts, temp_files_to_delete
 
 async def process_with_retry(message: Message, bot_user: types.User, text_content: str, 
-                             prompt_parts: List, status_message: Optional[Message] = None):
+                             prompt_parts: List, temp_files: List):
     """Пробует обработать сообщение с переключением моделей и API при необходимости."""
     global ACTIVE_MODEL, ACTIVE_MODEL_NAME, CURRENT_API_KEY_INDEX
-    
-    temp_files_to_delete = []
     
     try:
         # Определяем нужный системный промт
@@ -287,6 +315,8 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         
         if not prompt_parts:
             return
+        
+        print(f"🚀 Отправляю запрос в {ACTIVE_MODEL_NAME} с {len(prompt_parts)} частями")
         
         # Создаем модель с нужным системным промтом
         current_model = genai.GenerativeModel(
@@ -299,6 +329,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         
         if response.text:
             await message.reply(response.text)
+            print(f"✅ Ответ отправлен")
         else:
             await message.reply("...")
         
@@ -307,6 +338,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
     except Exception as e:
         logging.error(f"Gen Error: {e}")
         error_str = str(e)
+        print(f"❌ Ошибка: {error_str}")
         
         if "429" in error_str or "quota" in error_str:
             # Лимит исчерпан на текущей модели и API
@@ -319,13 +351,13 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
             # Пробуем найти другую модель на этом же ключе (тихо)
             if await find_best_working_model(silent=True):
                 print(f"✅ Нашли альтернативную модель: {ACTIVE_MODEL_NAME}")
-                return await process_with_retry(message, bot_user, text_content, prompt_parts, status_message)
+                return await process_with_retry(message, bot_user, text_content, prompt_parts, temp_files)
             
             # Нет других моделей на этом ключе, переключаемся на другой API
             print(f"🔄 Нет моделей на API #{CURRENT_API_KEY_INDEX + 1}, пробуем другой...")
             if await switch_api_key(silent=True):
                 print(f"✅ Переключились на API #{CURRENT_API_KEY_INDEX + 1}, модель: {ACTIVE_MODEL_NAME}")
-                return await process_with_retry(message, bot_user, text_content, prompt_parts, status_message)
+                return await process_with_retry(message, bot_user, text_content, prompt_parts, temp_files)
             
             # Все исчерпано
             await message.reply("❌ На сегодня лимиты кончились, попробуйте завтра.")
@@ -335,7 +367,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
             # Модель недоступна, ищем другую
             if await find_best_working_model(silent=True):
                 print(f"✅ Переключились на модель: {ACTIVE_MODEL_NAME}")
-                return await process_with_retry(message, bot_user, text_content, prompt_parts, status_message)
+                return await process_with_retry(message, bot_user, text_content, prompt_parts, temp_files)
             
             await message.reply("❌ На сегодня лимиты кончились, попробуйте завтра.")
             return False
@@ -343,6 +375,15 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         else:
             await message.reply("❌ Ошибка обработки.")
             return False
+    
+    finally:
+        # Очистка временных файлов
+        for f_path in temp_files:
+            try:
+                os.remove(f_path)
+                print(f"🗑️ Удален временный файл: {f_path}")
+            except Exception as e:
+                print(f"⚠️ Не удалось удалить {f_path}: {e}")
 
 # --- ХЕНДЛЕРЫ ---
 @dp.message(CommandStart())
@@ -390,25 +431,26 @@ async def main_handler(message: Message):
         elif message.caption:
             text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
         
+        print(f"\n📨 Новое сообщение от {message.from_user.username or message.from_user.id}")
+        print(f"Текст: {text_content[:100] if text_content else '(нет текста)'}")
+        print(f"Фото: {'да' if message.photo else 'нет'}")
+        print(f"Аудио: {'да' if message.voice else 'нет'}")
+        
         prompt_parts, temp_files_to_delete = await prepare_prompt_parts(message, bot_user)
         
         if not prompt_parts:
+            print("⚠️ Нет содержимого для обработки")
             return
         
+        print(f"📦 Подготовлено {len(prompt_parts)} частей промта")
+        
         # Обрабатываем с возможностью переключения моделей/API
-        await process_with_retry(message, bot_user, text_content, prompt_parts)
+        await process_with_retry(message, bot_user, text_content, prompt_parts, temp_files_to_delete)
     
     except Exception as e:
         logging.error(f"Handler Error: {e}")
+        print(f"❌ Handler Error: {e}")
         await message.reply("❌ Ошибка обработки.")
-    
-    finally:
-        # Очистка временных файлов
-        for f_path in temp_files_to_delete:
-            try:
-                os.remove(f_path)
-            except:
-                pass
 
 # --- SERVER ---
 @app.get("/")
