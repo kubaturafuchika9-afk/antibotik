@@ -5,3 +5,5 @@ uvicorn
 aiohttp
 python-multipart
 pillow
+torch
+torchaudio
