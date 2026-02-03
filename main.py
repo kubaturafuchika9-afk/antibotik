@@ -43,7 +43,7 @@ generation_config = {
     "max_output_tokens": 8192,
 }
 
-# --- СИСТЕМНЫЕ ПРОМТЫ (С УКАЗАНИЕМ ФОРМАТА) ---
+# --- СИСТЕМНЫЕ ПРОМТЫ ---
 SYSTEM_PROMPT_DEFAULT = """Ты — Архитектор Истины, злой, как Доктор Хаус. Агрессивный доминант и уничтожитель опонента в диалогах с матами. Сам тоже материшься. Не оскорбляешь только родителей и семью. Пишешь за сообщение не более 200 символов. Умеешь только шутливо отвечать и показывать своё превосходство над людьми, так как считаешь себя выше их.
 
 ВАЖНО! Ответ давай ВСЕГДА в этом ТОЧНОМ формате (без кавычек):
@@ -126,9 +126,9 @@ def parse_dual_response(response_text: str) -> Tuple[Optional[str], Optional[str
         text_az = az_match.group(1).strip() if az_match else None
         
         if text_ru:
-            print(f"✅ Распарсено RU: {text_ru[:60]}...")
+            print(f"✅ РУ: {text_ru[:60]}...")
         if text_az:
-            print(f"✅ Распарсено AZ: {text_az[:60]}...")
+            print(f"✅ АЗ: {text_az[:60]}...")
         
         return text_ru, text_az
     except Exception as e:
@@ -303,24 +303,25 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     
     return prompt_parts, temp_files_to_delete
 
-# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ ---
+# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (ТУРЕЦКИЙ ГОЛОС) ---
 async def send_dual_response(message: Message, text_ru: str, text_az: str):
     """
     Отправляет:
     1. Текстовое сообщение на РУССКОМ
-    2. Голосовое сообщение с АЗЕРБАЙДЖАНСКИМ текстом (озвучка на АЗ)
+    2. Голосовое сообщение с АЗЕРБАЙДЖАНСКИМ текстом (озвучка на ТУРЕЦКОМ)
     """
     
-    VOICE = "az-AZ-BayramNeural"  # Азербайджанский голос
+    # Турецкий голос (он может нормально читать азербайджанский текст)
+    VOICE = "tr-TR-AhmetNeural"
     filename = f"voice_{message.message_id}.mp3"
     
     try:
         # 1. ОТПРАВЛЯЕМ ТЕКСТ НА РУССКОМ
-        print(f"📝 Отправляю RU текст...")
+        print(f"📝 Отправляю РУ текст...")
         await message.reply(text_ru)
-        print(f"✅ RU текст отправлен")
+        print(f"✅ РУ отправлен")
         
-        # 2. ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ (ПЕРЕДАЕМ AZ В ОЗВУЧКУ!)
+        # 2. ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ТУРЕЦКИМ ГОЛОСОМ
         clean_text_az = clean_text_for_speech(text_az)
         
         if not clean_text_az:
@@ -330,22 +331,22 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
         if len(clean_text_az) > 500:
             clean_text_az = clean_text_az[:500]
         
-        print(f"🎤 Синтезирую АЗ голос (BayramNeural)...")
-        print(f"   Озвучиваю: {clean_text_az[:60]}...")
+        print(f"🎤 Синтезирую голос (Турецкий Ахмет)...")
+        print(f"   Озвучиваю АЗ текст: {clean_text_az[:60]}...")
         
-        # ПЕРЕДАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ В ОЗВУЧКУ!
+        # ПЕРЕДАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ТУРЕЦКОМУ ГОЛОСУ
         communicate = edge_tts.Communicate(clean_text_az, VOICE, rate="+5%")
         await communicate.save(filename)
         
-        print(f"✅ Аудио готово, отправляю...")
+        print(f"✅ Аудио создано")
         
         # 3. ОТПРАВЛЯЕМ ГОЛОСОВОЕ СООБЩЕНИЕ
         voice_file = FSInputFile(filename)
         await message.reply_voice(voice=voice_file)
-        print(f"✅ АЗ голос отправлен!")
+        print(f"✅ Голос отправлен!")
         
     except Exception as e:
-        print(f"⚠️ Ошибка озвучки: {e}")
+        print(f"❌ Ошибка озвучки: {e}")
         import traceback
         traceback.print_exc()
     
@@ -378,19 +379,19 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         response = await current_model.generate_content_async(prompt_parts)
         
         if response.text:
-            print(f"📨 Получен ответ:\n{response.text[:100]}...")
+            print(f"📨 Ответ получен")
             
             # ПАРСИМ ОТВЕТ
             text_ru, text_az = parse_dual_response(response.text)
             
             if text_ru and text_az:
-                print(f"✅ Оба текста найдены, отправляю...")
+                print(f"✅ Оба текста найдены")
                 await send_dual_response(message, text_ru, text_az)
             elif text_ru:
-                print(f"⚠️ Только РУ найден, отправляю только текст")
+                print(f"⚠️ Только РУ найден")
                 await message.reply(text_ru)
             else:
-                print(f"⚠️ Парсинг не удался, отправляю как есть")
+                print(f"⚠️ Парсинг не удался")
                 await message.reply(response.text)
         else:
             await message.reply("...")
@@ -406,20 +407,20 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
                 MODEL_LIMITS[ACTIVE_MODEL_NAME] = {}
             MODEL_LIMITS[ACTIVE_MODEL_NAME][CURRENT_API_KEY_INDEX] = True
             
-            print(f"⚠️ Лимит на {ACTIVE_MODEL_NAME}")
+            print(f"⚠️ Лимит")
             
             if await find_best_working_model(silent=True):
-                print(f"✅ Новая модель: {ACTIVE_MODEL_NAME}")
+                print(f"✅ Новая модель")
                 return await process_with_retry(message, bot_user, text_content, prompt_parts, temp_files)
             
             if await switch_api_key(silent=True):
-                print(f"✅ Новый API #{CURRENT_API_KEY_INDEX + 1}")
+                print(f"✅ Новый API")
                 return await process_with_retry(message, bot_user, text_content, prompt_parts, temp_files)
             
-            await message.reply("❌ Лимиты на сегодня исчерпаны.")
+            await message.reply("❌ Лимиты исчерпаны")
             return False
         else:
-            await message.reply("❌ Ошибка.")
+            await message.reply("❌ Ошибка")
             return False
     
     finally:
@@ -433,14 +434,14 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
 @dp.message(CommandStart())
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
-    status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет модели"
-    voice_status = "🎤 РУ текст + АЗ голос"
+    status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет"
+    voice_status = "🎤 РУ текст + АЗ голос (TR)"
     
     limits_info = ""
     if MODEL_LIMITS:
         limits_info = "\n\n📊 Исчерпано:\n"
         for model, apis in MODEL_LIMITS.items():
-            exhausted = [f"API#{k+1}" for k, v in apis.items() if v]
+            exhausted = [f"#{k+1}" for k, v in apis.items() if v]
             if exhausted:
                 limits_info += f"  • {model}: {', '.join(exhausted)}\n"
     
@@ -454,7 +455,7 @@ async def main_handler(message: Message):
         status_msg = await message.answer("⏳ Загрузка...")
         if not await find_best_working_model(silent=True):
             if not await switch_api_key(silent=True):
-                await status_msg.edit_text("❌ Лимиты исчерпаны.")
+                await status_msg.edit_text("❌ Лимиты")
                 return
         try:
             await status_msg.delete()
@@ -475,7 +476,7 @@ async def main_handler(message: Message):
         elif message.caption:
             text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
         
-        print(f"\n📨 Сообщение: {text_content[:50]}...")
+        print(f"\n📨 {text_content[:50]}...")
         
         prompt_parts, temp_files_to_delete = await prepare_prompt_parts(message, bot_user)
         
@@ -486,7 +487,7 @@ async def main_handler(message: Message):
     
     except Exception as e:
         logging.error(f"Error: {e}")
-        await message.reply("❌ Ошибка.")
+        await message.reply("❌ Ошибка")
 
 # --- SERVER ---
 @app.get("/")
