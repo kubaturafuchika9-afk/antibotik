@@ -14,6 +14,8 @@ from PIL import Image
 
 # БИБЛИОТЕКА ДЛЯ ГОЛОСА MICROSOFT AZURE (DMITRY)
 import edge_tts
+# БИБЛИОТЕКА ДЛЯ ПЕРЕВОДА
+from deep_translator import GoogleTranslator
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
@@ -101,6 +103,18 @@ def clean_text_for_speech(text: str) -> str:
     """Удаляет Markdown символы, чтобы бот их не читал вслух."""
     text = text.replace("*", "").replace("_", "").replace("`", "").replace("**", "").replace("__", "")
     return text.strip()
+
+def translate_to_azerbaijani(text: str) -> Optional[str]:
+    """Переводит текст на азербайджанский язык."""
+    try:
+        print(f"🌐 Перевожу на азербайджанский...")
+        translator = GoogleTranslator(source='ru', target='az')
+        translated = translator.translate(text)
+        print(f"✅ Перевод готов")
+        return translated
+    except Exception as e:
+        print(f"⚠️ Ошибка перевода: {e}")
+        return None
 
 # --- ЛОГИКА АВТО-ПОДБОРА МОДЕЛИ ---
 def get_dynamic_model_list():
@@ -290,39 +304,59 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     return prompt_parts, temp_files_to_delete
 
 # --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ (MICROSOFT EDGE TTS) ---
-async def reply_with_voice(message: Message, text: str):
-    """Озвучивает текст голосом DmitryNeural (Microsoft) и отправляет как голосовое сообщение."""
+async def reply_with_voice(message: Message, text_ru: str):
+    """
+    1. Отправляет текст на русском (текстовое сообщение)
+    2. Переводит на азербайджанский
+    3. Озвучивает азербайджанский перевод голосом DmitryNeural
+    """
     
+    # Голос Дмитрия
     VOICE = "ru-RU-DmitryNeural"
     filename = f"voice_{message.message_id}.mp3"
     
     try:
-        print(f"🎤 Синтезирую голос Дмитрия...")
+        # 1. ОТПРАВЛЯЕМ ТЕКСТ НА РУССКОМ
+        await message.reply(text_ru)
+        print(f"✅ Текстовое сообщение отправлено на русском")
         
-        # Очищаем текст от разметки
-        clean_text = clean_text_for_speech(text)
+        # 2. ПЕРЕВОДИМ НА АЗЕРБАЙДЖАНСКИЙ
+        text_az = translate_to_azerbaijani(text_ru)
+        
+        if not text_az:
+            print("⚠️ Перевод не удался, озвучка на русском...")
+            text_az = text_ru
+        
+        # 3. ОЧИЩАЕМ ТЕКСТ И ОЗВУЧИВАЕМ
+        clean_text = clean_text_for_speech(text_az)
         
         if not clean_text:
-            await message.reply(text)
             return
         
-        # Ограничиваем длину (иначе может долго генерироваться)
+        # Ограничиваем длину
         if len(clean_text) > 500:
             clean_text = clean_text[:500]
+        
+        print(f"🎤 Синтезирую голос на азербайджанском...")
         
         # Генерируем аудио через Microsoft Edge TTS
         communicate = edge_tts.Communicate(clean_text, VOICE, rate="+10%")
         await communicate.save(filename)
         
-        # Отправляем как голосовое сообщение
+        # 4. ОТПРАВЛЯЕМ ГОЛОСОВОЕ СООБЩЕНИЕ
         voice_file = FSInputFile(filename)
-        await message.reply_voice(voice=voice_file, caption=text[:1000])
-        print(f"✅ Голосовое сообщение отправлено!")
+        # Caption на азербайджанском для справки
+        await message.reply_voice(
+            voice=voice_file,
+            caption=f"🇦🇿 Азербайджанский перевод:\n{text_az[:200]}"
+        )
+        print(f"✅ Голосовое сообщение (АЗ) отправлено!")
         
     except Exception as e:
-        print(f"⚠️ Ошибка синтеза речи: {e}")
-        # Если не вышло с голосом, шлем просто текст
-        await message.reply(text)
+        print(f"⚠️ Ошибка: {e}")
+        # Если не вышло с голосом, просто отправляем текст
+        if text_ru:
+            await message.reply(text_ru)
     
     finally:
         # Удаляем временный файл
@@ -354,7 +388,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         response = await current_model.generate_content_async(prompt_parts)
         
         if response.text:
-            # ОЗВУЧИВАЕМ ОТВЕТ И ОТПРАВЛЯЕМ КАК ГОЛОС
+            # ОТПРАВЛЯЕМ ТЕКСТ НА РУССКОМ И ОЗВУЧИВАЕМ НА АЗЕРБАЙДЖАНСКОМ
             await reply_with_voice(message, response.text)
         else:
             await message.reply("...")
@@ -401,7 +435,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ Модель: `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет связи с AI"
-    voice_status = "🎤 Голос: ✅ DmitryNeural"
+    voice_status = "🎤 Голос: ✅ Азербайджанский (DmitryNeural)"
     
     limits_info = ""
     if MODEL_LIMITS:
@@ -474,7 +508,7 @@ async def root():
         "model": ACTIVE_MODEL_NAME,
         "api_key": CURRENT_API_KEY_INDEX + 1,
         "total_api_keys": len(GOOGLE_KEYS),
-        "voice": "DmitryNeural",
+        "voice": "DmitryNeural (Azerbaijani)",
         "exhausted_limits": MODEL_LIMITS
     }
 
