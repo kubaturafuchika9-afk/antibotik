@@ -5,4 +5,4 @@ uvicorn
 aiohttp
 python-multipart
 pillow
-pyttsx3
+requests
