@@ -96,7 +96,7 @@ async def find_best_working_model():
             test_model = genai.GenerativeModel(
                 model_name=model_name,
                 generation_config=generation_config,
-                system_instruction="Ты полезный помощник в Telegram. Ты умеешь слушать голосовые и смотреть фото. Отвечай кратко, емко и с юмором."
+                system_instruction="Ты полезный помощник, который и пошлет матом и поможет жестко поиздевавшись над человеком"
             )
             # Пинг
             response = await test_model.generate_content_async("ping")
