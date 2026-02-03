@@ -303,16 +303,16 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     
     return prompt_parts, temp_files_to_delete
 
-# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ (MICROSOFT EDGE TTS) ---
+# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ (MICROSOFT EDGE TTS С АЗЕРБАЙДЖАНСКИМ ГОЛОСОМ) ---
 async def reply_with_voice(message: Message, text_ru: str):
     """
     1. Отправляет текст на русском (текстовое сообщение)
     2. Переводит на азербайджанский
-    3. Озвучивает азербайджанский перевод голосом DmitryNeural
+    3. Озвучивает азербайджанский перевод голосом BayramNeural (азербайджанский)
     """
     
-    # Голос Дмитрия
-    VOICE = "ru-RU-DmitryNeural"
+    # АЗЕРБАЙДЖАНСКИЙ ГОЛОС (мужской, естественный)
+    VOICE = "az-AZ-BayramNeural"
     filename = f"voice_{message.message_id}.mp3"
     
     try:
@@ -337,20 +337,20 @@ async def reply_with_voice(message: Message, text_ru: str):
         if len(clean_text) > 500:
             clean_text = clean_text[:500]
         
-        print(f"🎤 Синтезирую голос на азербайджанском...")
+        print(f"🎤 Синтезирую голос на азербайджанском (BayramNeural)...")
         
-        # Генерируем аудио через Microsoft Edge TTS
-        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+10%")
+        # Генерируем аудио через Microsoft Edge TTS с азербайджанским голосом
+        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
         await communicate.save(filename)
         
         # 4. ОТПРАВЛЯЕМ ГОЛОСОВОЕ СООБЩЕНИЕ
         voice_file = FSInputFile(filename)
-        # Caption на азербайджанском для справки
+        # Caption НА РУССКОМ для справки
         await message.reply_voice(
             voice=voice_file,
-            caption=f"🇦🇿 Азербайджанский перевод:\n{text_az[:200]}"
+            caption=f"🇦🇿 Ответ на азербайджанском"
         )
-        print(f"✅ Голосовое сообщение (АЗ) отправлено!")
+        print(f"✅ Голосовое сообщение (азербайджанский) отправлено!")
         
     except Exception as e:
         print(f"⚠️ Ошибка: {e}")
@@ -435,7 +435,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ Модель: `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет связи с AI"
-    voice_status = "🎤 Голос: ✅ Азербайджанский (DmitryNeural)"
+    voice_status = "🎤 Голос: ✅ BayramNeural (Азербайджанский)"
     
     limits_info = ""
     if MODEL_LIMITS:
@@ -508,7 +508,7 @@ async def root():
         "model": ACTIVE_MODEL_NAME,
         "api_key": CURRENT_API_KEY_INDEX + 1,
         "total_api_keys": len(GOOGLE_KEYS),
-        "voice": "DmitryNeural (Azerbaijani)",
+        "voice": "BayramNeural (Azerbaijani)",
         "exhausted_limits": MODEL_LIMITS
     }
 
