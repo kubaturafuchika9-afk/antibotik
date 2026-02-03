@@ -5,4 +5,4 @@ uvicorn
 aiohttp
 python-multipart
 pillow
-requests
+edge-tts
