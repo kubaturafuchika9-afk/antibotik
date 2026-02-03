@@ -10,7 +10,7 @@ import uvicorn
 from fastapi import FastAPI
 import aiohttp
 from PIL import Image
-import pyttsx3
+import requests
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
@@ -30,6 +30,8 @@ GOOGLE_KEYS = [
     os.getenv("GOOGLE_API_KEY_5"),
     os.getenv("GOOGLE_API_KEY_6"),
 ]
+AZURE_TTS_KEY = os.getenv("AZURE_TTS_KEY")
+AZURE_TTS_REGION = os.getenv("AZURE_TTS_REGION", "eastus")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").lower() == "true"
 
@@ -80,39 +82,6 @@ app = FastAPI()
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# --- ИНИЦИАЛИЗАЦИЯ PYTTSX3 TTS ---
-TTS_ENGINE = None
-
-def init_tts():
-    """Инициализирует pyttsx3"""
-    global TTS_ENGINE
-    if not VOICE_ENABLED:
-        return
-    
-    try:
-        print("🎙️ Инициализирую TTS engine...")
-        TTS_ENGINE = pyttsx3.init()
-        TTS_ENGINE.setProperty('rate', 150)  # Скорость произношения
-        TTS_ENGINE.setProperty('volume', 0.9)  # Громкость
-        
-        # Ищем русский голос
-        voices = TTS_ENGINE.getProperty('voices')
-        russian_voice = None
-        for voice in voices:
-            if 'russian' in voice.name.lower() or 'ru' in voice.name.lower():
-                russian_voice = voice.id
-                break
-        
-        if russian_voice:
-            TTS_ENGINE.setProperty('voice', russian_voice)
-            print(f"✅ TTS engine готов (русский голос)")
-        else:
-            print(f"⚠️ Русский голос не найден, используется голос по умолчанию")
-    
-    except Exception as e:
-        print(f"⚠️ Ошибка инициализации TTS: {e}")
-        TTS_ENGINE = None
-
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
 ACTIVE_MODEL = None
 ACTIVE_MODEL_NAME = "Searching..."
@@ -135,14 +104,14 @@ def detect_system_prompt(text: str) -> str:
     
     return SYSTEM_PROMPT_DEFAULT
 
-# --- СИНТЕЗ РЕЧИ PYTTSX3 ---
-async def text_to_speech(text: str) -> Optional[bytes]:
-    """Преобразует текст в речь через pyttsx3"""
-    if not TTS_ENGINE or not VOICE_ENABLED:
+# --- СИНТЕЗ РЕЧИ AZURE ---
+async def text_to_speech_azure(text: str) -> Optional[bytes]:
+    """Преобразует текст в речь через Microsoft Azure TTS"""
+    if not AZURE_TTS_KEY or not VOICE_ENABLED:
         return None
     
     try:
-        print(f"🎙️ Синтезирую речь: {text[:50]}...")
+        print(f"🎙️ Синтезирую речь Azure: {text[:50]}...")
         
         # Очищаем текст от разметки Markdown
         clean_text = text.replace("*", "").replace("_", "").replace("`", "").replace("❌", "").replace("✅", "")
@@ -152,29 +121,37 @@ async def text_to_speech(text: str) -> Optional[bytes]:
             return None
         
         # Ограничиваем длину текста
-        if len(clean_text) > 300:
-            clean_text = clean_text[:300]
+        if len(clean_text) > 1000:
+            clean_text = clean_text[:1000]
         
-        # Сохраняем в временный файл
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
-            tmp_path = tmp_file.name
+        # SSML формат для Azure
+        ssml = f"""<speak version='1.0' xml:lang='ru-RU'>
+            <voice name='ru-RU-DmitryNeural'>
+                <prosody rate='1.2' pitch='0%'>
+                    {clean_text}
+                </prosody>
+            </voice>
+        </speak>"""
         
-        # Синтезируем речь
-        TTS_ENGINE.save_to_file(clean_text, tmp_path)
-        TTS_ENGINE.runAndWait()
+        headers = {
+            'Ocp-Apim-Subscription-Key': AZURE_TTS_KEY,
+            'Content-Type': 'application/ssml+xml',
+            'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3'
+        }
         
-        # Читаем файл в байты
-        with open(tmp_path, 'rb') as f:
-            audio_bytes = f.read()
+        url = f"https://{AZURE_TTS_REGION}.tts.speech.microsoft.com/cognitiveservices/v1"
         
-        # Удаляем временный файл
-        os.remove(tmp_path)
+        response = requests.post(url, headers=headers, data=ssml.encode('utf-8'))
         
-        print(f"✅ Речь синтезирована, размер: {len(audio_bytes)} байт")
-        return audio_bytes
+        if response.status_code == 200:
+            print(f"✅ Речь синтезирована Azure, размер: {len(response.content)} байт")
+            return response.content
+        else:
+            print(f"❌ Azure TTS ошибка: {response.status_code} - {response.text}")
+            return None
     
     except Exception as e:
-        print(f"❌ Ошибка синтеза речи: {e}")
+        print(f"❌ Ошибка синтеза речи Azure: {e}")
         return None
 
 # --- ЛОГИКА АВТО-ПОДБОРА МОДЕЛИ ---
@@ -394,13 +371,13 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
             print(f"✅ Ответ отправлен")
             
             # Пробуем отправить голосовой ответ
-            if VOICE_ENABLED and TTS_ENGINE:
+            if VOICE_ENABLED and AZURE_TTS_KEY:
                 print(f"🎤 Готовлю голосовой ответ...")
-                voice_data = await text_to_speech(response_text)
+                voice_data = await text_to_speech_azure(response_text)
                 if voice_data:
                     try:
                         voice_file = BytesIO(voice_data)
-                        voice_file.name = "response.wav"
+                        voice_file.name = "response.mp3"
                         await message.reply_voice(voice_file)
                         print(f"✅ Голосовое сообщение отправлено")
                     except Exception as e:
@@ -459,7 +436,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ Модель: `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет связи с AI"
-    voice_status = "🎤 Голос: ✅" if VOICE_ENABLED and TTS_ENGINE else "🎤 Голос: ❌"
+    voice_status = "🎤 Голос: ✅ Azure" if VOICE_ENABLED and AZURE_TTS_KEY else "🎤 Голос: ❌"
     
     limits_info = ""
     if MODEL_LIMITS:
@@ -527,7 +504,7 @@ async def root():
         "model": ACTIVE_MODEL_NAME,
         "api_key": CURRENT_API_KEY_INDEX + 1,
         "total_api_keys": len(GOOGLE_KEYS),
-        "voice_enabled": VOICE_ENABLED and TTS_ENGINE is not None,
+        "voice_enabled": VOICE_ENABLED and AZURE_TTS_KEY is not None,
         "exhausted_limits": MODEL_LIMITS
     }
 
@@ -548,8 +525,6 @@ async def keep_alive_ping():
             pass
 
 async def start_bot():
-    init_tts()
-    
     global CURRENT_API_KEY_INDEX
     for i, key in enumerate(GOOGLE_KEYS):
         try:
@@ -559,6 +534,11 @@ async def start_bot():
             break
         except Exception as e:
             print(f"⚠️ API ключ #{i + 1} недоступен: {e}")
+    
+    if AZURE_TTS_KEY:
+        print(f"✅ Azure TTS настроен ({AZURE_TTS_REGION})")
+    else:
+        print(f"⚠️ Azure TTS не настроен")
     
     await find_best_working_model()
     await bot.delete_webhook(drop_pending_updates=True)
