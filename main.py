@@ -10,8 +10,7 @@ import uvicorn
 from fastapi import FastAPI
 import aiohttp
 from PIL import Image
-import torch
-import torchaudio
+import pyttsx3
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
@@ -81,25 +80,38 @@ app = FastAPI()
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-# --- ИНИЦИАЛИЗАЦИЯ SILERO TTS ---
-TTS_MODEL = None
-TTS_SAMPLE_RATE = 24000
+# --- ИНИЦИАЛИЗАЦИЯ PYTTSX3 TTS ---
+TTS_ENGINE = None
 
-def init_silero_tts():
-    """Инициализирует Silero TTS модель"""
-    global TTS_MODEL
+def init_tts():
+    """Инициализирует pyttsx3"""
+    global TTS_ENGINE
     if not VOICE_ENABLED:
         return
     
     try:
-        print("🎙️ Загружаю Silero TTS модель...")
-        device = torch.device('cpu')
-        TTS_MODEL = torch.jit.load('https://models.silero.ai/models/tts/ru/v3_1_ru.pt', map_location=device)
-        TTS_MODEL.eval()
-        print("✅ Silero TTS модель загружена")
+        print("🎙️ Инициализирую TTS engine...")
+        TTS_ENGINE = pyttsx3.init()
+        TTS_ENGINE.setProperty('rate', 150)  # Скорость произношения
+        TTS_ENGINE.setProperty('volume', 0.9)  # Громкость
+        
+        # Ищем русский голос
+        voices = TTS_ENGINE.getProperty('voices')
+        russian_voice = None
+        for voice in voices:
+            if 'russian' in voice.name.lower() or 'ru' in voice.name.lower():
+                russian_voice = voice.id
+                break
+        
+        if russian_voice:
+            TTS_ENGINE.setProperty('voice', russian_voice)
+            print(f"✅ TTS engine готов (русский голос)")
+        else:
+            print(f"⚠️ Русский голос не найден, используется голос по умолчанию")
+    
     except Exception as e:
-        print(f"⚠️ Ошибка загрузки Silero TTS: {e}")
-        TTS_MODEL = None
+        print(f"⚠️ Ошибка инициализации TTS: {e}")
+        TTS_ENGINE = None
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
 ACTIVE_MODEL = None
@@ -123,14 +135,14 @@ def detect_system_prompt(text: str) -> str:
     
     return SYSTEM_PROMPT_DEFAULT
 
-# --- СИНТЕЗ РЕЧИ SILERO ---
-async def text_to_speech_silero(text: str) -> Optional[bytes]:
-    """Преобразует текст в речь через Silero TTS"""
-    if not TTS_MODEL or not VOICE_ENABLED:
+# --- СИНТЕЗ РЕЧИ PYTTSX3 ---
+async def text_to_speech(text: str) -> Optional[bytes]:
+    """Преобразует текст в речь через pyttsx3"""
+    if not TTS_ENGINE or not VOICE_ENABLED:
         return None
     
     try:
-        print(f"🎙️ Синтезирую речь из текста: {text[:50]}...")
+        print(f"🎙️ Синтезирую речь: {text[:50]}...")
         
         # Очищаем текст от разметки Markdown
         clean_text = text.replace("*", "").replace("_", "").replace("`", "").replace("❌", "").replace("✅", "")
@@ -139,21 +151,17 @@ async def text_to_speech_silero(text: str) -> Optional[bytes]:
         if not clean_text:
             return None
         
-        # Ограничиваем длину текста (Silero работает медленнее на длинных текстах)
-        if len(clean_text) > 500:
-            clean_text = clean_text[:500]
+        # Ограничиваем длину текста
+        if len(clean_text) > 300:
+            clean_text = clean_text[:300]
         
-        # Генерируем речь
-        audio = TTS_MODEL.apply_tts(
-            text=clean_text,
-            speaker='baya',
-            sample_rate=TTS_SAMPLE_RATE
-        )
-        
-        # Преобразуем в байты
+        # Сохраняем в временный файл
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
-            torchaudio.save(tmp_file.name, audio.unsqueeze(0), TTS_SAMPLE_RATE)
             tmp_path = tmp_file.name
+        
+        # Синтезируем речь
+        TTS_ENGINE.save_to_file(clean_text, tmp_path)
+        TTS_ENGINE.runAndWait()
         
         # Читаем файл в байты
         with open(tmp_path, 'rb') as f:
@@ -386,9 +394,9 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
             print(f"✅ Ответ отправлен")
             
             # Пробуем отправить голосовой ответ
-            if VOICE_ENABLED and TTS_MODEL:
+            if VOICE_ENABLED and TTS_ENGINE:
                 print(f"🎤 Готовлю голосовой ответ...")
-                voice_data = await text_to_speech_silero(response_text)
+                voice_data = await text_to_speech(response_text)
                 if voice_data:
                     try:
                         voice_file = BytesIO(voice_data)
@@ -451,7 +459,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ Модель: `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет связи с AI"
-    voice_status = "🎤 Голос: ✅" if VOICE_ENABLED and TTS_MODEL else "🎤 Голос: ❌"
+    voice_status = "🎤 Голос: ✅" if VOICE_ENABLED and TTS_ENGINE else "🎤 Голос: ❌"
     
     limits_info = ""
     if MODEL_LIMITS:
@@ -519,7 +527,7 @@ async def root():
         "model": ACTIVE_MODEL_NAME,
         "api_key": CURRENT_API_KEY_INDEX + 1,
         "total_api_keys": len(GOOGLE_KEYS),
-        "voice_enabled": VOICE_ENABLED and TTS_MODEL is not None,
+        "voice_enabled": VOICE_ENABLED and TTS_ENGINE is not None,
         "exhausted_limits": MODEL_LIMITS
     }
 
@@ -540,7 +548,7 @@ async def keep_alive_ping():
             pass
 
 async def start_bot():
-    init_silero_tts()
+    init_tts()
     
     global CURRENT_API_KEY_INDEX
     for i, key in enumerate(GOOGLE_KEYS):
