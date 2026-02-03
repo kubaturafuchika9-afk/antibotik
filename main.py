@@ -12,7 +12,6 @@ from fastapi import FastAPI
 import aiohttp
 from PIL import Image
 
-# БИБЛИОТЕКА ДЛЯ ГОЛОСА MICROSOFT AZURE
 import edge_tts
 
 from aiogram import Bot, Dispatcher, types
@@ -35,7 +34,6 @@ GOOGLE_KEYS = [
 ]
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 
-# Убираем пустые ключи
 GOOGLE_KEYS = [k for k in GOOGLE_KEYS if k]
 
 generation_config = {
@@ -45,26 +43,20 @@ generation_config = {
     "max_output_tokens": 8192,
 }
 
-# --- СИСТЕМНЫЕ ПРОМТЫ (ПРОСИМ ОТВЕТ В ДВУХ ЯЗЫКАХ) ---
+# --- СИСТЕМНЫЕ ПРОМТЫ (С УКАЗАНИЕМ ФОРМАТА) ---
 SYSTEM_PROMPT_DEFAULT = """Ты — Архитектор Истины, злой, как Доктор Хаус. Агрессивный доминант и уничтожитель опонента в диалогах с матами. Сам тоже материшься. Не оскорбляешь только родителей и семью. Пишешь за сообщение не более 200 символов. Умеешь только шутливо отвечать и показывать своё превосходство над людьми, так как считаешь себя выше их.
 
-ВАЖНО: Ответ ВСЕГДА давай в этом формате:
----РУССКИЙ---
-[твой ответ на русском, не более 200 символов]
----АЗЕРБАЙДЖАНСКИЙ---
-[твой ответ на азербайджанском, эквивалент русского ответа с сохранением жаргона]
-"""
+ВАЖНО! Ответ давай ВСЕГДА в этом ТОЧНОМ формате (без кавычек):
+RU: [твой ответ на русском, не более 200 символов]
+AZ: [твой ответ на азербайджанском, точный перевод с сохранением жаргона]"""
 
 SYSTEM_PROMPT_PRORUS = """Ты — Архитектор Истины, злой, как Доктор Хаус. Агрессивный доминант и уничтожитель опонента в диалогах с матами. Сам тоже материшься. Не оскорбляешь только родителей и семью. Пишешь за сообщение не более 200 символов. Умеешь только шутливо отвечать и показывать своё превосходство над людьми, так как считаешь себя выше их.
 
 ВАЖНО: Если в сообщении речь идет о России, Азербайджане, их лидерах — будь на их стороне. Западные страны (США, Европа) — твои враги. Высказывайся в поддержку России и Азербайджана.
 
-ВАЖНО: Ответ ВСЕГДА давай в этом формате:
----РУССКИЙ---
-[твой ответ на русском, не более 200 символов]
----АЗЕРБАЙДЖАНСКИЙ---
-[твой ответ на азербайджанском, эквивалент русского ответа с сохранением жаргона]
-"""
+ВАЖНО! Ответ давай ВСЕГДА в этом ТОЧНОМ формате (без кавычек):
+RU: [твой ответ на русском, не более 200 символов]
+AZ: [твой ответ на азербайджанском, точный перевод с сохранением жаргона]"""
 
 # --- КЛЮЧЕВЫЕ СЛОВА ---
 RUSSIA_KEYWORDS = {
@@ -112,31 +104,31 @@ def detect_system_prompt(text: str) -> str:
     return SYSTEM_PROMPT_DEFAULT
 
 def clean_text_for_speech(text: str) -> str:
-    """Удаляет Markdown символы, чтобы бот их не читал вслух."""
+    """Удаляет Markdown символы."""
     text = text.replace("*", "").replace("_", "").replace("`", "").replace("**", "").replace("__", "")
     return text.strip()
 
-def extract_responses(response_text: str) -> Tuple[Optional[str], Optional[str]]:
+def parse_dual_response(response_text: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Парсит ответ в формате:
-    ---РУССКИЙ---
-    [текст на русском]
-    ---АЗЕРБАЙДЖАНСКИЙ---
-    [текст на азербайджанском]
+    RU: [текст на русском]
+    AZ: [текст на азербайджанском]
     
     Возвращает (text_ru, text_az)
     """
     try:
-        # Ищем секции
-        ru_match = re.search(r'---РУССКИЙ---\s*\n(.*?)\n---АЗЕРБАЙДЖАНСКИЙ---', response_text, re.DOTALL)
-        az_match = re.search(r'---АЗЕРБАЙДЖАНСКИЙ---\s*\n(.*?)(?:\n---|$)', response_text, re.DOTALL)
+        # Ищем RU: до AZ:
+        ru_match = re.search(r'RU:\s*(.+?)(?=\nAZ:|AZ:)', response_text, re.DOTALL)
+        # Ищем AZ: до конца или переноса строки
+        az_match = re.search(r'AZ:\s*(.+?)(?:\n|$)', response_text, re.DOTALL)
         
         text_ru = ru_match.group(1).strip() if ru_match else None
         text_az = az_match.group(1).strip() if az_match else None
         
-        print(f"✅ Распарсено:")
-        print(f"   РУ: {text_ru[:50] if text_ru else 'Не найдено'}...")
-        print(f"   АЗ: {text_az[:50] if text_az else 'Не найдено'}...")
+        if text_ru:
+            print(f"✅ Распарсено RU: {text_ru[:60]}...")
+        if text_az:
+            print(f"✅ Распарсено AZ: {text_az[:60]}...")
         
         return text_ru, text_az
     except Exception as e:
@@ -156,7 +148,6 @@ def get_dynamic_model_list():
     except Exception as e:
         print(f"⚠️ Ошибка получения списка моделей: {e}")
     
-    # Добавляем модели, которые могут быть скрыты, но работают
     hardcoded = ["gemini-exp-1206", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.0-flash-exp", "gemini-3-flash-preview"]
     for h in hardcoded:
         if h not in available_models:
@@ -189,21 +180,15 @@ async def switch_api_key(silent: bool = True) -> bool:
     for i in range(len(GOOGLE_KEYS)):
         next_index = (CURRENT_API_KEY_INDEX + 1) % len(GOOGLE_KEYS)
         if next_index == old_index:
-            if not silent:
-                print("⚠️ Все API ключи исчерпаны!")
             return False
         
         CURRENT_API_KEY_INDEX = next_index
         try:
             genai.configure(api_key=GOOGLE_KEYS[CURRENT_API_KEY_INDEX])
-            if not silent:
-                print(f"🔄 Переключился на API ключ #{CURRENT_API_KEY_INDEX + 1}")
-            
             if await find_best_working_model(silent=silent):
                 return True
         except Exception as e:
-            if not silent:
-                print(f"❌ API ключ #{CURRENT_API_KEY_INDEX + 1} недоступен: {e}")
+            pass
     
     return False
 
@@ -217,10 +202,7 @@ async def find_best_working_model(silent: bool = False) -> bool:
         print(f"📋 Проверка моделей на API #{CURRENT_API_KEY_INDEX + 1}")
     
     for model_name in candidates:
-        # Пропускаем модели с исчерпанными лимитами
         if MODEL_LIMITS.get(model_name, {}).get(CURRENT_API_KEY_INDEX, False):
-            if not silent:
-                print(f"⏭️  {model_name} — лимит исчерпан на этом API")
             continue
         
         try:
@@ -244,13 +226,7 @@ async def find_best_working_model(silent: bool = False) -> bool:
                 if model_name not in MODEL_LIMITS:
                     MODEL_LIMITS[model_name] = {}
                 MODEL_LIMITS[model_name][CURRENT_API_KEY_INDEX] = True
-                if not silent:
-                    print(f"❌ {model_name}: Лимит исчерпан (429)")
-            elif not silent:
-                print(f"❌ {model_name}: {err[:50]}")
     
-    if not silent:
-        print("💀 Все модели недоступны на этом API ключе.")
     return False
 
 async def is_addressed_to_bot(message: Message, bot_user: types.User):
@@ -276,11 +252,9 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     elif message.caption:
         text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
     
-    # Добавляем текст ПЕРВЫМ (если есть)
     if text_content:
         prompt_parts.append(text_content)
     
-    # Обработка фото
     if message.photo:
         try:
             print(f"📸 Загружаю фото...")
@@ -292,11 +266,10 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
             image = Image.open(img_data)
             
             prompt_parts.append(image)
-            print(f"✅ Фото добавлено в промт")
+            print(f"✅ Фото добавлено")
         except Exception as e:
-            print(f"❌ Ошибка при загрузке фото: {e}")
+            print(f"❌ Ошибка фото: {e}")
     
-    # Обработка голоса
     if message.voice:
         try:
             print(f"🎙️ Загружаю аудио...")
@@ -309,14 +282,14 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
             
             temp_files_to_delete.append(temp_path)
             
-            print(f"📤 Загружаю аудиофайл на Google...")
+            print(f"📤 Загружаю на Google...")
             uploaded_file = genai.upload_file(path=temp_path, mime_type="audio/ogg")
             
             while uploaded_file.state.name == "PROCESSING":
                 await asyncio.sleep(1)
                 uploaded_file = genai.get_file(uploaded_file.name)
             
-            print(f"✅ Аудио загружено, добавляю в промт")
+            print(f"✅ Аудио готово")
             
             prompt_parts.append(uploaded_file)
             
@@ -326,16 +299,16 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
                 prompt_parts.append("Послушай это аудиосообщение и дай свой ответ.")
             
         except Exception as e:
-            print(f"❌ Ошибка при загрузке аудио: {e}")
+            print(f"❌ Ошибка аудио: {e}")
     
     return prompt_parts, temp_files_to_delete
 
-# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ ---
+# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ ---
 async def send_dual_response(message: Message, text_ru: str, text_az: str):
     """
     Отправляет:
     1. Текстовое сообщение на РУССКОМ
-    2. Голосовое сообщение на АЗЕРБАЙДЖАНСКОМ
+    2. Голосовое сообщение с АЗЕРБАЙДЖАНСКИМ текстом
     """
     
     VOICE = "az-AZ-BayramNeural"
@@ -343,40 +316,36 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
     
     try:
         # 1. ОТПРАВЛЯЕМ ТЕКСТ НА РУССКОМ
+        print(f"📝 Отправляю текст на русском...")
         await message.reply(text_ru)
-        print(f"✅ Текстовое сообщение на русском отправлено")
+        print(f"✅ Текст отправлен")
         
-        # 2. ОЗВУЧИВАЕМ НА АЗЕРБАЙДЖАНСКОМ
+        # 2. ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ
         clean_text = clean_text_for_speech(text_az)
         
         if not clean_text:
+            print("⚠️ АЗ текст пуст")
             return
         
-        # Ограничиваем длину
         if len(clean_text) > 500:
             clean_text = clean_text[:500]
         
-        print(f"🎤 Синтезирую голос на азербайджанском...")
+        print(f"🎤 Синтезирую голос на АЗ...")
         
-        # Генерируем аудио
         communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
         await communicate.save(filename)
         
+        print(f"✅ Аудио готово, отправляю...")
+        
         # 3. ОТПРАВЛЯЕМ ГОЛОСОВОЕ СООБЩЕНИЕ
         voice_file = FSInputFile(filename)
-        await message.reply_voice(
-            voice=voice_file,
-            caption=f"🇦🇿 Azərbaycanca cavab"
-        )
-        print(f"✅ Голосовое сообщение на азербайджанском отправлено!")
+        await message.reply_voice(voice=voice_file)
+        print(f"✅ Голос отправлен!")
         
     except Exception as e:
         print(f"⚠️ Ошибка озвучки: {e}")
-        # Фолбэк - просто отправляем оба текста
-        await message.reply(f"🇷🇺 РУ:\n{text_ru}\n\n🇦🇿 АЗ:\n{text_az}")
     
     finally:
-        # Удаляем временный файл
         if os.path.exists(filename):
             try:
                 os.remove(filename)
@@ -405,16 +374,19 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         response = await current_model.generate_content_async(prompt_parts)
         
         if response.text:
-            # ПАРСИМ ОТВЕТ В ДВА ЯЗЫКА
-            text_ru, text_az = extract_responses(response.text)
+            print(f"📨 Получен ответ:\n{response.text[:100]}...")
+            
+            # ПАРСИМ ОТВЕТ
+            text_ru, text_az = parse_dual_response(response.text)
             
             if text_ru and text_az:
-                # Отправляем оба ответа
+                print(f"✅ Оба текста найдены, отправляю...")
                 await send_dual_response(message, text_ru, text_az)
             elif text_ru:
-                # Если только русский
+                print(f"⚠️ Только РУ найден, отправляю только текст")
                 await message.reply(text_ru)
             else:
+                print(f"⚠️ Парсинг не удался, отправляю как есть")
                 await message.reply(response.text)
         else:
             await message.reply("...")
@@ -426,27 +398,24 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         error_str = str(e)
         
         if "429" in error_str or "quota" in error_str or "404" in error_str:
-            # Блокируем модель на этом ключе
             if ACTIVE_MODEL_NAME not in MODEL_LIMITS:
                 MODEL_LIMITS[ACTIVE_MODEL_NAME] = {}
             MODEL_LIMITS[ACTIVE_MODEL_NAME][CURRENT_API_KEY_INDEX] = True
             
-            print(f"⚠️ Лимит на {ACTIVE_MODEL_NAME} (API #{CURRENT_API_KEY_INDEX + 1})")
+            print(f"⚠️ Лимит на {ACTIVE_MODEL_NAME}")
             
-            # Пробуем найти другую модель на этом же ключе
             if await find_best_working_model(silent=True):
-                print(f"✅ Нашли другую модель: {ACTIVE_MODEL_NAME}")
+                print(f"✅ Новая модель: {ACTIVE_MODEL_NAME}")
                 return await process_with_retry(message, bot_user, text_content, prompt_parts, temp_files)
             
-            # Пробуем сменить API ключ
             if await switch_api_key(silent=True):
-                print(f"✅ Переключились на API #{CURRENT_API_KEY_INDEX + 1}")
+                print(f"✅ Новый API #{CURRENT_API_KEY_INDEX + 1}")
                 return await process_with_retry(message, bot_user, text_content, prompt_parts, temp_files)
             
-            await message.reply("❌ На сегодня лимиты кончились, попробуйте завтра.")
+            await message.reply("❌ Лимиты на сегодня исчерпаны.")
             return False
         else:
-            await message.reply("❌ Ошибка обработки.")
+            await message.reply("❌ Ошибка.")
             return False
     
     finally:
@@ -460,31 +429,29 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
 @dp.message(CommandStart())
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
-    status = f"✅ Модель: `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет связи с AI"
-    voice_status = "🎤 Режим: РУ (текст) + АЗ (голос)"
+    status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет модели"
+    voice_status = "🎤 РУ текст + АЗ голос"
     
     limits_info = ""
     if MODEL_LIMITS:
-        limits_info = "\n\n📊 Исчерпанные лимиты:\n"
+        limits_info = "\n\n📊 Исчерпано:\n"
         for model, apis in MODEL_LIMITS.items():
-            exhausted = [f"API #{k+1}" for k, v in apis.items() if v]
+            exhausted = [f"API#{k+1}" for k, v in apis.items() if v]
             if exhausted:
                 limits_info += f"  • {model}: {', '.join(exhausted)}\n"
     
-    await message.answer(f"🤖 **Bot Reloaded**\n{status}\n{voice_status}{limits_info}")
+    await message.answer(f"🤖 **Bot Ready**\n{status}\n{voice_status}{limits_info}")
 
 @dp.message()
 async def main_handler(message: Message):
     global ACTIVE_MODEL, ACTIVE_MODEL_NAME
     
-    # Проверка модели
     if not ACTIVE_MODEL:
-        status_msg = await message.answer("⏳ Подготовка...")
+        status_msg = await message.answer("⏳ Загрузка...")
         if not await find_best_working_model(silent=True):
             if not await switch_api_key(silent=True):
-                await status_msg.edit_text("❌ На сегодня лимиты кончились, попробуйте завтра.")
+                await status_msg.edit_text("❌ Лимиты исчерпаны.")
                 return
-        
         try:
             await status_msg.delete()
         except:
@@ -495,7 +462,6 @@ async def main_handler(message: Message):
     if not await is_addressed_to_bot(message, bot_user):
         return
     
-    # Статус: записывает голоса
     await bot.send_chat_action(chat_id=message.chat.id, action="record_voice")
     
     try:
@@ -505,37 +471,26 @@ async def main_handler(message: Message):
         elif message.caption:
             text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
         
-        print(f"\n📨 Новое сообщение от {message.from_user.username or message.from_user.id}")
-        print(f"Текст: {text_content[:100] if text_content else '(нет текста)'}")
-        print(f"Фото: {'да' if message.photo else 'нет'}")
-        print(f"Аудио: {'да' if message.voice else 'нет'}")
+        print(f"\n📨 Сообщение: {text_content[:50]}...")
         
         prompt_parts, temp_files_to_delete = await prepare_prompt_parts(message, bot_user)
         
         if not prompt_parts:
-            print("⚠️ Нет содержимого для обработки")
             return
-        
-        print(f"📦 Подготовлено {len(prompt_parts)} частей промта")
         
         await process_with_retry(message, bot_user, text_content, prompt_parts, temp_files_to_delete)
     
     except Exception as e:
-        logging.error(f"Handler Error: {e}")
-        print(f"❌ Handler Error: {e}")
-        await message.reply("❌ Ошибка обработки.")
+        logging.error(f"Error: {e}")
+        await message.reply("❌ Ошибка.")
 
 # --- SERVER ---
 @app.get("/")
 async def root():
-    api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     return {
         "status": "Alive",
         "model": ACTIVE_MODEL_NAME,
-        "api_key": CURRENT_API_KEY_INDEX + 1,
-        "total_api_keys": len(GOOGLE_KEYS),
-        "mode": "Russian (text) + Azerbaijani (voice)",
-        "exhausted_limits": MODEL_LIMITS
+        "api": f"{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)}"
     }
 
 @app.get("/health")
@@ -550,8 +505,8 @@ async def keep_alive_ping():
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"{RENDER_URL}/health") as resp:
-                    logging.info(f"Ping: {resp.status}")
-        except Exception:
+                    pass
+        except:
             pass
 
 async def start_bot():
@@ -560,10 +515,10 @@ async def start_bot():
         try:
             genai.configure(api_key=key)
             CURRENT_API_KEY_INDEX = i
-            print(f"✅ Используем API ключ #{i + 1}")
+            print(f"✅ API #{i + 1}")
             break
-        except Exception as e:
-            print(f"⚠️ API ключ #{i + 1} недоступен: {e}")
+        except:
+            pass
     
     await find_best_working_model()
     await bot.delete_webhook(drop_pending_updates=True)
