@@ -4,7 +4,7 @@ import logging
 import sys
 import tempfile
 from io import BytesIO
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 import uvicorn
 from fastapi import FastAPI
@@ -26,6 +26,8 @@ GOOGLE_KEYS = [
     os.getenv("GOOGLE_API_KEY_2"),
     os.getenv("GOOGLE_API_KEY_3"),
     os.getenv("GOOGLE_API_KEY_4"),
+    os.getenv("GOOGLE_API_KEY_5"),
+    os.getenv("GOOGLE_API_KEY_6"),
 ]
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 
@@ -81,6 +83,7 @@ ACTIVE_MODEL = None
 ACTIVE_MODEL_NAME = "Searching..."
 CURRENT_API_KEY_INDEX = 0
 MODEL_LIMITS = {}  # {model_name: {api_key_index: is_exhausted}}
+PROCESSING_MESSAGE = None  # Для отслеживания текущей обработки
 
 # --- ФУНКЦИЯ ОПРЕДЕЛЕНИЯ ПРОМТА ---
 def detect_system_prompt(text: str) -> str:
@@ -133,7 +136,7 @@ def sort_models_priority(models):
     
     return sorted(models, key=score, reverse=True)
 
-async def switch_api_key():
+async def switch_api_key(silent: bool = True) -> bool:
     """Переключается на следующий доступный API ключ."""
     global CURRENT_API_KEY_INDEX, ACTIVE_MODEL, ACTIVE_MODEL_NAME
     
@@ -142,37 +145,44 @@ async def switch_api_key():
     for i in range(len(GOOGLE_KEYS)):
         next_index = (CURRENT_API_KEY_INDEX + 1) % len(GOOGLE_KEYS)
         if next_index == old_index:
-            print("⚠️ Все API ключи исчерпаны!")
+            if not silent:
+                print("⚠️ Все API ключи исчерпаны!")
             return False
         
         CURRENT_API_KEY_INDEX = next_index
         try:
             genai.configure(api_key=GOOGLE_KEYS[CURRENT_API_KEY_INDEX])
-            print(f"🔄 Переключился на API ключ #{CURRENT_API_KEY_INDEX + 1}")
+            if not silent:
+                print(f"🔄 Переключился на API ключ #{CURRENT_API_KEY_INDEX + 1}")
             
             # Пробуем переподключиться с новым ключом
-            if await find_best_working_model():
+            if await find_best_working_model(silent=silent):
                 return True
         except Exception as e:
-            print(f"❌ API ключ #{CURRENT_API_KEY_INDEX + 1} недоступен: {e}")
+            if not silent:
+                print(f"❌ API ключ #{CURRENT_API_KEY_INDEX + 1} недоступен: {e}")
     
     return False
 
-async def find_best_working_model():
+async def find_best_working_model(silent: bool = False) -> bool:
+    """Находит рабочую модель. Если silent=True, не выводит сообщения в лог."""
     global ACTIVE_MODEL, ACTIVE_MODEL_NAME, MODEL_LIMITS
     
     candidates = get_dynamic_model_list()
     candidates = sort_models_priority(candidates)
     
-    print(f"📋 Очередь проверки (API #{CURRENT_API_KEY_INDEX + 1}): {candidates}")
+    if not silent:
+        print(f"📋 Очередь проверки (API #{CURRENT_API_KEY_INDEX + 1}): {candidates}")
     
     for model_name in candidates:
         # Пропускаем модели с исчерпанными лимитами на этом ключе
         if MODEL_LIMITS.get(model_name, {}).get(CURRENT_API_KEY_INDEX, False):
-            print(f"⏭️  {model_name} — лимит исчерпан на этом API ключе")
+            if not silent:
+                print(f"⏭️  {model_name} — лимит исчерпан на этом API ключе")
             continue
         
-        print(f"👉 Тест: {model_name}...", end=" ")
+        if not silent:
+            print(f"👉 Тест: {model_name}...", end=" ")
         try:
             test_model = genai.GenerativeModel(
                 model_name=model_name,
@@ -183,7 +193,8 @@ async def find_best_working_model():
             response = await test_model.generate_content_async("ping")
             
             if response and response.text:
-                print("✅ ЖИВАЯ! Подключаюсь.")
+                if not silent:
+                    print("✅ ЖИВАЯ! Подключаюсь.")
                 ACTIVE_MODEL = test_model
                 ACTIVE_MODEL_NAME = model_name
                 return True
@@ -191,18 +202,23 @@ async def find_best_working_model():
         except Exception as e:
             err = str(e)
             if "429" in err:
-                print("❌ (429 Лимит)")
+                if not silent:
+                    print("❌ (429 Лимит)")
                 # Отмечаем лимит для этой модели на этом ключе
                 if model_name not in MODEL_LIMITS:
                     MODEL_LIMITS[model_name] = {}
                 MODEL_LIMITS[model_name][CURRENT_API_KEY_INDEX] = True
-                print(f"   📝 Модель {model_name} исчерпана на API #{CURRENT_API_KEY_INDEX + 1}")
+                if not silent:
+                    print(f"   📝 Модель {model_name} исчерпана на API #{CURRENT_API_KEY_INDEX + 1}")
             elif "404" in err:
-                print("❌ (404 Нет доступа)")
+                if not silent:
+                    print("❌ (404 Нет доступа)")
             else:
-                print(f"❌ ({err})")
+                if not silent:
+                    print(f"❌ ({err})")
     
-    print("💀 Все модели недоступны на этом API ключе.")
+    if not silent:
+        print("💀 Все модели недоступны на этом API ключе.")
     return False
 
 async def is_addressed_to_bot(message: Message, bot_user: types.User):
@@ -216,6 +232,117 @@ async def is_addressed_to_bot(message: Message, bot_user: types.User):
     if message.caption and f"@{bot_user.username}" in message.caption:
         return True
     return False
+
+async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[List, List]:
+    """Подготавливает части промта и список временных файлов для удаления."""
+    prompt_parts = []
+    temp_files_to_delete = []
+    
+    text_content = ""
+    if message.text:
+        text_content = message.text.replace(f"@{bot_user.username}", "").strip()
+    elif message.caption:
+        text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
+    
+    if text_content:
+        prompt_parts.append(text_content)
+    
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+        file_info = await bot.get_file(photo_id)
+        img_data = BytesIO()
+        await bot.download_file(file_info.file_path, img_data)
+        img_data.seek(0)
+        image = Image.open(img_data)
+        prompt_parts.append(image)
+    
+    if message.voice:
+        file_id = message.voice.file_id
+        file_info = await bot.get_file(file_id)
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
+            await bot.download_file(file_info.file_path, destination=temp_audio.name)
+            temp_path = temp_audio.name
+        temp_files_to_delete.append(temp_path)
+        
+        uploaded_file = genai.upload_file(path=temp_path, mime_type="audio/ogg")
+        while uploaded_file.state.name == "PROCESSING":
+            await asyncio.sleep(1)
+            uploaded_file = genai.get_file(uploaded_file.name)
+        
+        prompt_parts.append(uploaded_file)
+        prompt_parts.append("Послушай и ответь.")
+    
+    return prompt_parts, temp_files_to_delete
+
+async def process_with_retry(message: Message, bot_user: types.User, text_content: str, 
+                             prompt_parts: List, status_message: Optional[Message] = None):
+    """Пробует обработать сообщение с переключением моделей и API при необходимости."""
+    global ACTIVE_MODEL, ACTIVE_MODEL_NAME, CURRENT_API_KEY_INDEX
+    
+    temp_files_to_delete = []
+    
+    try:
+        # Определяем нужный системный промт
+        system_prompt = detect_system_prompt(text_content)
+        
+        if not prompt_parts:
+            return
+        
+        # Создаем модель с нужным системным промтом
+        current_model = genai.GenerativeModel(
+            model_name=ACTIVE_MODEL_NAME,
+            generation_config=generation_config,
+            system_instruction=system_prompt
+        )
+        
+        response = await current_model.generate_content_async(prompt_parts)
+        
+        if response.text:
+            await message.reply(response.text)
+        else:
+            await message.reply("...")
+        
+        return True
+    
+    except Exception as e:
+        logging.error(f"Gen Error: {e}")
+        error_str = str(e)
+        
+        if "429" in error_str or "quota" in error_str:
+            # Лимит исчерпан на текущей модели и API
+            if ACTIVE_MODEL_NAME not in MODEL_LIMITS:
+                MODEL_LIMITS[ACTIVE_MODEL_NAME] = {}
+            MODEL_LIMITS[ACTIVE_MODEL_NAME][CURRENT_API_KEY_INDEX] = True
+            
+            print(f"⚠️ Лимит {ACTIVE_MODEL_NAME} на API #{CURRENT_API_KEY_INDEX + 1}")
+            
+            # Пробуем найти другую модель на этом же ключе (тихо)
+            if await find_best_working_model(silent=True):
+                print(f"✅ Нашли альтернативную модель: {ACTIVE_MODEL_NAME}")
+                return await process_with_retry(message, bot_user, text_content, prompt_parts, status_message)
+            
+            # Нет других моделей на этом ключе, переключаемся на другой API
+            print(f"🔄 Нет моделей на API #{CURRENT_API_KEY_INDEX + 1}, пробуем другой...")
+            if await switch_api_key(silent=True):
+                print(f"✅ Переключились на API #{CURRENT_API_KEY_INDEX + 1}, модель: {ACTIVE_MODEL_NAME}")
+                return await process_with_retry(message, bot_user, text_content, prompt_parts, status_message)
+            
+            # Все исчерпано
+            await message.reply("❌ На сегодня лимиты кончились, попробуйте завтра.")
+            return False
+        
+        elif "404" in error_str:
+            # Модель недоступна, ищем другую
+            if await find_best_working_model(silent=True):
+                print(f"✅ Переключились на модель: {ACTIVE_MODEL_NAME}")
+                return await process_with_retry(message, bot_user, text_content, prompt_parts, status_message)
+            
+            await message.reply("❌ На сегодня лимиты кончились, попробуйте завтра.")
+            return False
+        
+        else:
+            await message.reply("❌ Ошибка обработки.")
+            return False
 
 # --- ХЕНДЛЕРЫ ---
 @dp.message(CommandStart())
@@ -235,16 +362,18 @@ async def command_start_handler(message: Message):
 
 @dp.message()
 async def main_handler(message: Message):
+    global ACTIVE_MODEL, ACTIVE_MODEL_NAME
+    
     # Если при старте не нашли модель, пробуем найти сейчас
     if not ACTIVE_MODEL:
-        await message.answer("🔄 Ищу живую модель...")
-        if not await find_best_working_model():
+        status_msg = await message.answer("⏳ Подготовка...")
+        if not await find_best_working_model(silent=True):
             # Пробуем переключиться на другой API ключ
-            if await switch_api_key():
-                await message.answer(f"✅ Переключился на другой API ключ. Модель: {ACTIVE_MODEL_NAME}")
-            else:
-                await message.answer("❌ Безуспешно. Все API ключи исчерпаны.")
+            if not await switch_api_key(silent=True):
+                await status_msg.edit_text("❌ На сегодня лимиты кончились, попробуйте завтра.")
                 return
+        
+        await status_msg.delete()
     
     bot_user = await bot.get_me()
     
@@ -253,99 +382,28 @@ async def main_handler(message: Message):
     
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     
-    prompt_parts = []
-    temp_files_to_delete = []
-    
     try:
+        # Подготавливаем промт части
         text_content = ""
         if message.text:
             text_content = message.text.replace(f"@{bot_user.username}", "").strip()
         elif message.caption:
             text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
         
-        # Определяем нужный системный промт
-        system_prompt = detect_system_prompt(text_content)
-        
-        if text_content:
-            prompt_parts.append(text_content)
-        
-        if message.photo:
-            photo_id = message.photo[-1].file_id
-            file_info = await bot.get_file(photo_id)
-            img_data = BytesIO()
-            await bot.download_file(file_info.file_path, img_data)
-            img_data.seek(0)
-            image = Image.open(img_data)
-            prompt_parts.append(image)
-        
-        if message.voice:
-            file_id = message.voice.file_id
-            file_info = await bot.get_file(file_id)
-            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
-                await bot.download_file(file_info.file_path, destination=temp_audio.name)
-                temp_path = temp_audio.name
-            temp_files_to_delete.append(temp_path)
-            
-            uploaded_file = genai.upload_file(path=temp_path, mime_type="audio/ogg")
-            while uploaded_file.state.name == "PROCESSING":
-                await asyncio.sleep(1)
-                uploaded_file = genai.get_file(uploaded_file.name)
-            
-            prompt_parts.append(uploaded_file)
-            prompt_parts.append("Послушай и ответь.")
+        prompt_parts, temp_files_to_delete = await prepare_prompt_parts(message, bot_user)
         
         if not prompt_parts:
             return
         
-        # Создаем модель с нужным системным промтом
-        current_model = genai.GenerativeModel(
-            model_name=ACTIVE_MODEL_NAME,
-            generation_config=generation_config,
-            system_instruction=system_prompt
-        )
-        
-        response = await current_model.generate_content_async(prompt_parts)
-        
-        if response.text:
-            await message.reply(response.text)
-        else:
-            await message.reply("...")
+        # Обрабатываем с возможностью переключения моделей/API
+        await process_with_retry(message, bot_user, text_content, prompt_parts)
     
     except Exception as e:
-        logging.error(f"Gen Error: {e}")
-        error_str = str(e)
-        
-        if "429" in error_str or "quota" in error_str:
-            # Лимит исчерпан
-            if ACTIVE_MODEL_NAME not in MODEL_LIMITS:
-                MODEL_LIMITS[ACTIVE_MODEL_NAME] = {}
-            MODEL_LIMITS[ACTIVE_MODEL_NAME][CURRENT_API_KEY_INDEX] = True
-            
-            print(f"⚠️ Лимит {ACTIVE_MODEL_NAME} на API #{CURRENT_API_KEY_INDEX + 1}")
-            
-            # Пробуем найти другую модель на этом же ключе
-            await message.reply(f"⚠️ Модель {ACTIVE_MODEL_NAME} исчерпана. Ищу альтернативу на API #{CURRENT_API_KEY_INDEX + 1}...")
-            
-            if await find_best_working_model():
-                await message.reply(f"✅ Перешел на {ACTIVE_MODEL_NAME}. Повтори сообщение.")
-            else:
-                # Нет других моделей на этом ключе, переключаемся на другой API
-                await message.reply("🔄 Переключаюсь на другой API ключ...")
-                if await switch_api_key():
-                    await message.reply(f"✅ API #{CURRENT_API_KEY_INDEX + 1} активен. Модель: {ACTIVE_MODEL_NAME}. Повтори сообщение.")
-                else:
-                    await message.reply("💀 Больше нет доступных API ключей и моделей.")
-        
-        elif "404" in error_str:
-            await message.reply("⚠️ Модель недоступна. Ищу замену...")
-            if await find_best_working_model():
-                await message.reply(f"✅ Перешел на {ACTIVE_MODEL_NAME}. Повтори сообщение.")
-            else:
-                await message.reply("❌ Нет доступных моделей.")
-        else:
-            await message.reply("❌ Ошибка обработки.")
+        logging.error(f"Handler Error: {e}")
+        await message.reply("❌ Ошибка обработки.")
     
     finally:
+        # Очистка временных файлов
         for f_path in temp_files_to_delete:
             try:
                 os.remove(f_path)
