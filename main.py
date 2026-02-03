@@ -308,31 +308,33 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
     """
     Отправляет:
     1. Текстовое сообщение на РУССКОМ
-    2. Голосовое сообщение с АЗЕРБАЙДЖАНСКИМ текстом
+    2. Голосовое сообщение с АЗЕРБАЙДЖАНСКИМ текстом (озвучка на АЗ)
     """
     
-    VOICE = "az-AZ-BayramNeural"
+    VOICE = "az-AZ-BayramNeural"  # Азербайджанский голос
     filename = f"voice_{message.message_id}.mp3"
     
     try:
         # 1. ОТПРАВЛЯЕМ ТЕКСТ НА РУССКОМ
-        print(f"📝 Отправляю текст на русском...")
+        print(f"📝 Отправляю RU текст...")
         await message.reply(text_ru)
-        print(f"✅ Текст отправлен")
+        print(f"✅ RU текст отправлен")
         
-        # 2. ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ
-        clean_text = clean_text_for_speech(text_az)
+        # 2. ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ (ПЕРЕДАЕМ AZ В ОЗВУЧКУ!)
+        clean_text_az = clean_text_for_speech(text_az)
         
-        if not clean_text:
+        if not clean_text_az:
             print("⚠️ АЗ текст пуст")
             return
         
-        if len(clean_text) > 500:
-            clean_text = clean_text[:500]
+        if len(clean_text_az) > 500:
+            clean_text_az = clean_text_az[:500]
         
-        print(f"🎤 Синтезирую голос на АЗ...")
+        print(f"🎤 Синтезирую АЗ голос (BayramNeural)...")
+        print(f"   Озвучиваю: {clean_text_az[:60]}...")
         
-        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
+        # ПЕРЕДАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ В ОЗВУЧКУ!
+        communicate = edge_tts.Communicate(clean_text_az, VOICE, rate="+5%")
         await communicate.save(filename)
         
         print(f"✅ Аудио готово, отправляю...")
@@ -340,10 +342,12 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
         # 3. ОТПРАВЛЯЕМ ГОЛОСОВОЕ СООБЩЕНИЕ
         voice_file = FSInputFile(filename)
         await message.reply_voice(voice=voice_file)
-        print(f"✅ Голос отправлен!")
+        print(f"✅ АЗ голос отправлен!")
         
     except Exception as e:
         print(f"⚠️ Ошибка озвучки: {e}")
+        import traceback
+        traceback.print_exc()
     
     finally:
         if os.path.exists(filename):
