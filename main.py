@@ -33,7 +33,6 @@ GOOGLE_KEYS = [
     os.getenv("GOOGLE_API_KEY_6"),
 ]
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
-NANOBANA_API_KEY = os.getenv("NANOBANA_API_KEY", "")  # Добавь в .env
 
 GOOGLE_KEYS = [k for k in GOOGLE_KEYS if k]
 
@@ -83,8 +82,8 @@ WESTERN_KEYWORDS = {
 
 # --- ГОЛОСА ---
 VOICES = {
-    "az": "az-AZ-BanuNeural",      # Азербайджанский - Banu (женский)
-    "ru": "ru-RU-DariaNeural",     # Русский - Daria (женский)
+    "az": "az-AZ-BanuNeural",           # Азербайджанский - Banu (женский)
+    "ru": "ru-RU-SvetlanaNeural",      # Русский - Svetlana (женский, cheerful)
 }
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
@@ -309,41 +308,46 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     
     return prompt_parts, temp_files_to_delete
 
-# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (С ВЫБИРАЕМЫМ ГОЛОСОМ) ---
+# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (С СТИЛЯМИ) ---
 async def send_dual_response(message: Message, text_ru: str, text_az: str):
     """
     Отправляет ОДНО сообщение:
-    - Голосовое на выбранном языке
+    - Голосовое на выбранном языке со стилем
     - Caption с текстом
     """
-    
-    # Выбираем голос в зависимости от CURRENT_VOICE
-    if CURRENT_VOICE == "ru":
-        VOICE = VOICES["ru"]  # Daria - русский
-        text_to_voice = text_ru
-        print(f"🎤 Синтезирую голос (Daria - ru-RU)...")
-    else:
-        VOICE = VOICES["az"]  # Banu - азербайджанский
-        text_to_voice = text_az
-        print(f"🎤 Синтезирую голос (Banu - az-AZ)...")
     
     filename = f"voice_{message.message_id}.mp3"
     
     try:
-        clean_text = clean_text_for_speech(text_to_voice)
+        if CURRENT_VOICE == "ru":
+            VOICE = VOICES["ru"]  # Svetlana - русский
+            text_to_voice = text_ru
+            print(f"🎤 Синтезирую голос (Svetlana - ru-RU, CHEERFUL)...")
+            
+            # SSML с стилем для русского голоса
+            clean_text = clean_text_for_speech(text_ru)
+            if len(clean_text) > 500:
+                clean_text = clean_text[:500]
+            
+            # Используем SSML для добавления стиля
+            ssml_text = f'<speak><voice name="{VOICE}" style="cheerful">{clean_text}</voice></speak>'
+            print(f"   Озвучиваю: {clean_text[:60]}...")
+            
+            communicate = edge_tts.Communicate(ssml_text, VOICE, rate="+5%")
+        else:
+            VOICE = VOICES["az"]  # Banu - азербайджанский
+            text_to_voice = text_az
+            print(f"🎤 Синтезирую голос (Banu - az-AZ)...")
+            
+            clean_text = clean_text_for_speech(text_az)
+            if len(clean_text) > 500:
+                clean_text = clean_text[:500]
+            
+            print(f"   Озвучиваю: {clean_text[:60]}...")
+            
+            communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
         
-        if not clean_text:
-            print("⚠️ Текст пуст")
-            return
-        
-        if len(clean_text) > 500:
-            clean_text = clean_text[:500]
-        
-        print(f"   Озвучиваю: {clean_text[:60]}...")
-        
-        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
         await communicate.save(filename)
-        
         print(f"✅ Аудио создано")
         
         # Выбираем caption в зависимости от голоса
@@ -368,52 +372,51 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             except:
                 pass
 
-# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (NANOBANA) ---
-async def generate_image_nanobana(prompt: str) -> Optional[str]:
+# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (GOOGLE IMAGEN) ---
+async def generate_image_google(prompt: str, message_id: int) -> Optional[str]:
     """
-    Генерирует картинку через nanobana API
-    Возвращает URL картинки или None
+    Генерирует картинку через Google Imagen
+    Возвращает путь к сохраненной картинке или None
     """
-    
-    if not NANOBANA_API_KEY:
-        print("⚠️ NANOBANA_API_KEY не установлен")
-        return None
     
     try:
-        print(f"🎨 Отправляю prompt в Nanobana: {prompt[:60]}...")
+        print(f"🎨 Генерирую картинку: {prompt[:60]}...")
         
-        headers = {
-            "Authorization": f"Bearer {NANOBANA_API_KEY}",
-            "Content-Type": "application/json"
-        }
+        # Используем Gemini для генерации картинок
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
-        data = {
-            "prompt": prompt,
-            "model": "flux-pro",  # Или другая модель
-            "num_images": 1,
-            "size": "1024x1024",  # 4K будет дороже
-            "quality": "high"
-        }
+        full_prompt = f"""Generate a beautiful, high-quality, highly detailed 4K image based on this description:
+
+{prompt}
+
+Make it realistic, professional, and visually stunning."""
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.nanobana.com/v1/images/generations",
-                headers=headers,
-                json=data,
-                timeout=aiohttp.ClientTimeout(total=120)
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    image_url = result["data"][0]["url"]
-                    print(f"✅ Картинка готова: {image_url}")
-                    return image_url
-                else:
-                    error_text = await resp.text()
-                    print(f"❌ Ошибка Nanobana ({resp.status}): {error_text}")
-                    return None
-    
+        print(f"📤 Отправляю запрос на генерацию...")
+        
+        response = await model.generate_content_async(full_prompt)
+        
+        if response and response.text:
+            print(f"📨 Получен ответ от API")
+            print(f"   Длина ответа: {len(response.text)} символов")
+            
+            # Проверяем есть ли в ответе URL или base64 картинки
+            if "http" in response.text:
+                print(f"✅ Найден URL картинки")
+                return response.text
+            elif "data:image" in response.text or "base64" in response.text:
+                print(f"✅ Найдена base64 картинка")
+                return response.text
+            else:
+                print(f"⚠️ Ответ: {response.text[:200]}")
+                return None
+        else:
+            print("❌ Пустой ответ от API")
+            return None
+            
     except Exception as e:
         print(f"❌ Ошибка генерации: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 async def process_with_retry(message: Message, bot_user: types.User, text_content: str, 
@@ -494,7 +497,7 @@ async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет"
     
-    voice_lang = "🇦🇿 Azərbaycanca (Banu)" if CURRENT_VOICE == "az" else "🇷🇺 Русский (Daria)"
+    voice_lang = "🇦🇿 Azərbaycanca (Banu)" if CURRENT_VOICE == "az" else "🇷🇺 Русский (Svetlana - CHEERFUL)"
     voice_status = f"🎤 Голос: {voice_lang}"
     
     limits_info = ""
@@ -505,7 +508,7 @@ async def command_start_handler(message: Message):
             if exhausted:
                 limits_info += f"  • {model}: {', '.join(exhausted)}\n"
     
-    commands_info = "\n\n📋 Команды:\n/az - Азербайджанский голос\n/ru - Русский голос\n/banan [prompt] - Генерация картинки"
+    commands_info = "\n\n📋 Команды:\n/az - Азербайджанский голос\n/ru - Русский голос (CHEERFUL)\n/banan [описание] - Генерация 4K картинки"
     
     await message.answer(f"🤖 **Bot Ready**\n{status}\n{voice_status}{commands_info}{limits_info}")
 
@@ -521,34 +524,52 @@ async def switch_to_ru_handler(message: Message):
     """Переключение на русский голос"""
     global CURRENT_VOICE
     CURRENT_VOICE = "ru"
-    await message.answer("🎤 Переключился на русский голос (Daria)")
+    await message.answer("🎤 Переключился на русский голос (Svetlana - CHEERFUL)")
 
 @dp.message(Command("banan"))
 async def banan_handler(message: Message):
-    """Генерация картинки через nanobana"""
+    """Генерация картинки через Google Imagen"""
     
     # Извлекаем текст после команды
     command_text = message.text.replace("/banan", "").strip()
     
     if not command_text:
-        await message.answer("⚠️ Использование: /banan [описание картинки]")
+        await message.answer("⚠️ Использование: /banan [описание картинки]\n\nПример: /banan красивая картинка кота матроскина")
         return
     
-    await message.answer("🎨 Генерирую картинку...")
+    status_msg = await message.answer("🎨 Генерирую картинку в 4K...\n⏳ Это может занять 30-60 секунд")
     
-    image_url = await generate_image_nanobana(command_text)
+    image_result = await generate_image_google(command_text, message.message_id)
     
-    if image_url:
+    if image_result:
         try:
-            await message.answer_photo(
-                photo=image_url,
-                caption=f"✅ Готово!\n\nPrompt: {command_text}"
-            )
+            # Если это URL
+            if image_result.startswith("http"):
+                await message.answer_photo(
+                    photo=image_result,
+                    caption=f"✅ Картинка готова!\n\nPrompt: {command_text[:100]}"
+                )
+            # Если это base64 или data URL
+            elif "data:image" in image_result or "base64" in image_result:
+                await message.answer(f"✅ Картинка сгенерирована!\n\n{image_result[:200]}...")
+            else:
+                await message.answer(f"📝 Результат:\n{image_result}")
+            
+            try:
+                await status_msg.delete()
+            except:
+                pass
+                
         except Exception as e:
             print(f"❌ Ошибка отправки картинки: {e}")
-            await message.answer(f"❌ Не удалось отправить картинку.\n\nURL: {image_url}")
+            await message.answer(f"❌ Ошибка при отправке картинки:\n{e}")
     else:
-        await message.answer("❌ Ошибка генерации картинки")
+        await message.answer("❌ Ошибка генерации картинки. Попробуйте позже.")
+    
+    try:
+        await status_msg.delete()
+    except:
+        pass
 
 @dp.message()
 async def main_handler(message: Message):
