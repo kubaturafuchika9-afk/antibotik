@@ -19,8 +19,8 @@ import edge_tts
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, FSInputFile
+from aiogram.filters import CommandStart, Command, CallbackQueryFilter
+from aiogram.types import Message, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.client.default import DefaultBotProperties
 
 import google.generativeai as genai
@@ -62,8 +62,8 @@ SYSTEM_PROMPT_PRORUS = """Ты — Архитектор Истины, злой, 
 RU: [твой ответ на русском, не более 200 символов]
 AZ: [твой ответ на азербайджанском, точный перевод с сохранением жаргона]"""
 
-# ← НОВАЯ МОДЕЛЬ - НОРМАЛЬНЫЙ РЕЖИМ БЕЗ ОСКОРБЛЕНИЙ
-SYSTEM_PROMPT_NORMAL = """Ты — Архитектор Истины, судья в чате 'Антимасонская Партия'. Ты справедлив и мудр, но иногда саркастичен. Отвечай кратко и по делу, не более 3-4 предложений. Будь уважительным к людям, но не теряй авторитета. Твоя роль — судить ситуации и выносить справедливые решения. Не используй мат и оскорбления, но будь резким в оценках."""
+# ← НОВАЯ МОДЕЛЬ - РЕЖИМ СУДЬИ
+SYSTEM_PROMPT_NORMAL = """Ты — Архитекторша Нового Порядка, судья в чате 'Антимасонская Партия'. Ты справедлива и мудра, разоблачаешь заговоры, борешься с тайными обществами. Отвечай кратко и по делу, не более 3-4 предложений. Будь уважительной к людям, но не теряй авторитета. Твоя роль — судить ситуации, выносить справедливые решения и разоблачать масонские козни. Не используй мат и оскорбления, но будь резкой в оценках."""
 
 # --- КЛЮЧЕВЫЕ СЛОВА ---
 RUSSIA_KEYWORDS = {
@@ -98,6 +98,13 @@ VOICES = {
     "ru": "ru-RU-SvetlanaNeural",
 }
 
+# --- НАЗВАНИЯ РЕЖИМОВ ---
+REGIME_NAMES = {
+    "archiver_ru": "🔥 Архитекторша на Руси",
+    "archiver_az": "🔥 Королева из Карабаха",
+    "normal": "⚖️ Архитекторша Нового Порядка"
+}
+
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher()
 app = FastAPI()
@@ -110,9 +117,22 @@ ACTIVE_MODEL_NAME = "Searching..."
 CURRENT_API_KEY_INDEX = 0
 MODEL_LIMITS = {}
 CURRENT_VOICE = "az"
-CURRENT_MODE = "archiver"  # ← НОВОЕ! "archiver" или "normal"
+CURRENT_MODE = "archiver_az"  # "archiver_ru", "archiver_az", "normal"
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+def get_regime_buttons() -> InlineKeyboardMarkup:
+    """Возвращает клавиатуру с кнопками режимов."""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔥 Архитекторша на Руси", callback_data="regime_ru"),
+            InlineKeyboardButton(text="🔥 Королева из Карабаха", callback_data="regime_az"),
+        ],
+        [
+            InlineKeyboardButton(text="⚖️ Архитекторша Нового Порядка", callback_data="regime_norm"),
+        ]
+    ])
+    return keyboard
+
 def detect_system_prompt(text: str) -> str:
     """Определяет, какой системный промт использовать на основе текста."""
     if not text:
@@ -447,10 +467,13 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         # ВЫБИРАЕМ ПРОМПТ ПО РЕЖИМУ
         if CURRENT_MODE == "normal":
             system_prompt = SYSTEM_PROMPT_NORMAL
-            print(f"🤖 РЕЖИМ: NORMAL")
+            print(f"⚖️ РЕЖИМ: АРХИТЕКТОРША НОВОГО ПОРЯДКА")
         else:
             system_prompt = detect_system_prompt(text_content)
-            print(f"🔥 РЕЖИМ: ARCHIVER")
+            if CURRENT_MODE == "archiver_ru":
+                print(f"🔥 РЕЖИМ: АРХИТЕКТОРША НА РУСИ")
+            else:
+                print(f"🔥 РЕЖИМ: КОРОЛЕВА ИЗ КАРАБАХА")
         
         if not prompt_parts:
             return
@@ -561,6 +584,67 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
             except:
                 pass
 
+# --- CALLBACK ХЕНДЛЕРЫ ДЛЯ КНОПОК ---
+@dp.callback_query()
+async def handle_regime_callback(query: CallbackQuery):
+    """Обработка нажатий на кнопки режимов."""
+    global CURRENT_MODE, CURRENT_VOICE
+    
+    callback_data = query.data
+    
+    if callback_data == "regime_ru":
+        CURRENT_MODE = "archiver_ru"
+        CURRENT_VOICE = "ru"
+        regime_name = REGIME_NAMES["archiver_ru"]
+        
+        message_text = (
+            f"{regime_name}\n\n"
+            "Архитекторша на Руси строит судьбу России через боль и справедливость!\n\n"
+            "🎤 Голос: Русский (Svetlana)\n"
+            "📝 Текст: Русский + Азербайджанский\n"
+            "💬 Ответы: Агрессивные и едкие"
+        )
+        
+    elif callback_data == "regime_az":
+        CURRENT_MODE = "archiver_az"
+        CURRENT_VOICE = "az"
+        regime_name = REGIME_NAMES["archiver_az"]
+        
+        message_text = (
+            f"{regime_name}\n\n"
+            "Королева из Карабаха правит Востоком железной волей справедливости!\n\n"
+            "🎤 Голос: Азербайджанский (Banu)\n"
+            "📝 Текст: Русский\n"
+            "💬 Ответы: Агрессивные и мощные"
+        )
+        
+    elif callback_data == "regime_norm":
+        CURRENT_MODE = "normal"
+        CURRENT_VOICE = "ru"
+        regime_name = REGIME_NAMES["normal"]
+        
+        message_text = (
+            f"{regime_name}\n\n"
+            "Я — Архитекторша Нового Порядка, судья в чате 'Антимасонская Партия'\n\n"
+            "🎤 Голос: Русский (Svetlana)\n"
+            "📝 Текст: Русский\n"
+            "💬 Ответы: Справедливые и вежливые"
+        )
+    else:
+        return
+    
+    # Редактируем сообщение с новым текстом и обновляем кнопки
+    try:
+        await query.message.edit_text(
+            message_text,
+            reply_markup=get_regime_buttons(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await query.answer(f"✅ {regime_name}", show_alert=False)
+    except Exception as e:
+        print(f"❌ Ошибка обновления сообщения: {e}")
+        await query.answer("❌ Ошибка переключения", show_alert=True)
+
 # --- ХЕНДЛЕРЫ ---
 @dp.message(CommandStart())
 async def command_start_handler(message: Message):
@@ -568,7 +652,7 @@ async def command_start_handler(message: Message):
     status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет"
     
     # Режим
-    mode_display = "🔥 Архитектор" if CURRENT_MODE == "archiver" else "🤖 Судья"
+    mode_display = REGIME_NAMES.get(CURRENT_MODE, "❓ Неизвестно")
     
     voice_lang = "🇦🇿 Azərbaycanca (Banu)" if CURRENT_VOICE == "az" else "🇷🇺 Русский (Svetlana)"
     voice_status = f"🎤 Голос: {voice_lang}"
@@ -584,68 +668,15 @@ async def command_start_handler(message: Message):
     commands_info = (
         "\n\n📋 *Команды:*\n"
         f"*Текущий режим:* {mode_display}\n\n"
-        "*Режимы:*\n"
-        "  /archiver - Режим Архитектора (агрессивный)\n"
-        "  /norm - Режим Судьи (справедливый)\n\n"
-        "*Голос (только Архитектор):*\n"
-        "  /az - Азербайджанский\n"
-        "  /ru - Русский\n\n"
+        "*Используй кнопки ниже для переключения режимов!*\n\n"
         "*Другое:*\n"
         "  /pic [описание] - Генерация картинки"
     )
     
-    await message.answer(f"🤖 *Bot Ready*\n{status}\n{voice_status}{commands_info}{limits_info}")
-
-@dp.message(Command("norm"))
-async def switch_to_normal_handler(message: Message):
-    """Переключение на режим Судьи"""
-    global CURRENT_MODE, CURRENT_VOICE
-    CURRENT_MODE = "normal"
-    CURRENT_VOICE = "ru"  # Русский голос в этом режиме
     await message.answer(
-        "⚖️ *Режим Судьи активирован*\n\n"
-        "Я — Архитектор Истины, судья в чате 'Антимасонская Партия'\n\n"
-        "🎤 Голос: Русский (Svetlana)\n"
-        "📝 Текст: Русский\n"
-        "💬 Ответы: Справедливые и вежливые\n\n"
-        "Используй /archiver для возврата к режиму Архитектора"
+        f"🤖 *Bot Ready*\n{status}\n{voice_status}{commands_info}{limits_info}",
+        reply_markup=get_regime_buttons()
     )
-
-@dp.message(Command("archiver"))
-async def switch_to_archiver_handler(message: Message):
-    """Переключение на режим Архитектора"""
-    global CURRENT_MODE
-    CURRENT_MODE = "archiver"
-    await message.answer(
-        "🔥 *Режим Архитектора активирован*\n\n"
-        "Я — Архитектор Истины, злой и агрессивный доминант!\n\n"
-        "🎤 Голос: Можешь переключить командой /ru или /az\n"
-        "📝 Текст: Русский + Азербайджанский\n"
-        "💬 Ответы: Агрессивные и едкие\n\n"
-        "Используй /norm для переключения в режим Судьи"
-    )
-
-@dp.message(Command("az"))
-async def switch_to_az_handler(message: Message):
-    """Переключение на азербайджанский голос"""
-    global CURRENT_VOICE
-    if CURRENT_MODE == "normal":
-        await message.answer("⚠️ Команда /az доступна только в режиме Архитектора")
-        return
-    
-    CURRENT_VOICE = "az"
-    await message.answer("🎤 Переключился на азербайджанский голос (Banu)\n\n📝 Текст всегда будет на русском!")
-
-@dp.message(Command("ru"))
-async def switch_to_ru_handler(message: Message):
-    """Переключение на русский голос"""
-    global CURRENT_VOICE
-    if CURRENT_MODE == "normal":
-        await message.answer("⚠️ Команда /ru доступна только в режиме Архитектора")
-        return
-    
-    CURRENT_VOICE = "ru"
-    await message.answer("🎤 Переключился на русский голос (Svetlana)")
 
 @dp.message(Command("pic"))
 async def pic_handler(message: Message):
@@ -762,7 +793,7 @@ async def root():
         "status": "Alive",
         "model": ACTIVE_MODEL_NAME,
         "voice": VOICES[CURRENT_VOICE],
-        "mode": CURRENT_MODE,
+        "mode": REGIME_NAMES.get(CURRENT_MODE, "Unknown"),
         "api": f"{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)}"
     }
 
