@@ -47,11 +47,17 @@ generation_config = {
     "max_output_tokens": 8192,
 }
 
-# --- ТРИГГЕРЫ ---
+# --- ТРИГГЕРЫ (ТОЛЬКО АКТИВАЦИЯ, БЕЗ ГОЛОСА) ---
 TRIGGER_WORDS = {
-    "чат", "архитектор", "старт", "робот",
-    "архитекторша", "королева", "карабах", "русь",
-    "помощь", "привет", "эй", "слушай", "ответь"
+    "чат",
+    "архитектор",
+    "старт",
+    "робот",
+    "архитекторша",
+    "королева",
+    "помощь",
+    "ии",
+    "бот"
 }
 
 # --- СИСТЕМНЫЕ ПРОМТЫ ---
@@ -131,6 +137,7 @@ CURRENT_API_KEY_INDEX = 0
 MODEL_LIMITS = {}
 CURRENT_VOICE = "az"
 CURRENT_MODE = "archiver_az"  # "archiver_ru", "archiver_az", "normal"
+IS_TRIGGERED = False  # ← НОВОЕ! Флаг для триггеров
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def get_regime_buttons() -> InlineKeyboardMarkup:
@@ -185,15 +192,12 @@ def parse_dual_response(response_text: str) -> Tuple[Optional[str], Optional[str
     try:
         print(f"📄 Полный ответ:\n{response_text}\n")
         
-        # Ищем RU: XXX
         ru_match = re.search(r'RU:\s*(.+?)(?=\n\s*AZ:|AZ:|$)', response_text, re.DOTALL)
-        # Ищем AZ: XXX
         az_match = re.search(r'AZ:\s*(.+?)(?:\n|$)', response_text, re.DOTALL)
         
         text_ru = ru_match.group(1).strip() if ru_match else None
         text_az = az_match.group(1).strip() if az_match else None
         
-        # Очищаем от лишних символов
         if text_ru:
             text_ru = text_ru.replace('\n', ' ').strip()
             print(f"✅ РУ ({len(text_ru)} символов): {text_ru[:80]}...")
@@ -437,10 +441,10 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
                 pass
 
 # --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (POLLINATIONS) ---
-async def generate_image_fooocus(prompt: str) -> Optional[bytes]:
+async def generate_image_pollinations(prompt: str) -> Optional[bytes]:
     """
     Генерирует картинку через Pollinations.ai (БЕСПЛАТНО и без ключей)
-    Использует модель Flux или схожую.
+    Использует модель Flux.
     """
     try:
         print(f"🎨 Генерирую картинку через Pollinations: {prompt[:60]}...")
@@ -451,31 +455,36 @@ async def generate_image_fooocus(prompt: str) -> Optional[bytes]:
         # Seed нужен, чтобы картинки были разными при одинаковом запросе
         seed = int(time.time())
         
-        # URL для генерации (model=flux дает лучшее качество сейчас)
+        # URL для генерации (model=flux дает лучшее качество)
         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&seed={seed}&nologo=true"
         
-        print(f"🔗 URL: {url[:100]}...")
+        print(f"🔗 Запрос к: image.pollinations.ai")
         
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
         
         async with aiohttp.ClientSession() as session:
-            # Pollinations работает через GET запрос, а не POST
+            # Pollinations работает через GET запрос
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as response:
                 print(f"📡 Статус ответа: {response.status}")
                 
                 if response.status == 200:
                     image_data = await response.read()
-                    if len(image_data) > 0:
+                    if len(image_data) > 1000:  # Проверяем что это реально картинка
                         print(f"✅ Картинка готова ({len(image_data)} байт)")
                         return image_data
+                    else:
+                        print(f"❌ Получены неполные данные ({len(image_data)} байт)")
+                        return None
                 
                 print(f"❌ Ошибка API: {response.status}")
+                text = await response.text()
+                print(f"Ответ: {text[:200]}")
                 return None
     
     except asyncio.TimeoutError:
-        print(f"❌ Timeout при генерации картинки")
+        print(f"❌ Timeout при генерации картинки (60 сек)")
         return None
     except Exception as e:
         print(f"❌ Ошибка генерации: {e}")
@@ -486,7 +495,7 @@ async def generate_image_fooocus(prompt: str) -> Optional[bytes]:
 async def process_with_retry(message: Message, bot_user: types.User, text_content: str, 
                              prompt_parts: List, temp_files: List):
     """Пробует обработать сообщение с переключением моделей и API при необходимости."""
-    global ACTIVE_MODEL, ACTIVE_MODEL_NAME, CURRENT_API_KEY_INDEX, CURRENT_MODE
+    global ACTIVE_MODEL, ACTIVE_MODEL_NAME, CURRENT_API_KEY_INDEX, CURRENT_MODE, IS_TRIGGERED
     
     try:
         # ВЫБИРАЕМ ПРОМПТ ПО РЕЖИМУ
@@ -565,7 +574,14 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
                         await message.reply("❌ Ответ содержит недопустимый контент.")
                         return
                     
-                    await send_dual_response(message, text_ru, text_az)
+                    # ✅ ЕСЛИ ТРИГГЕР - ОТПРАВЛЯЕМ ТЕКСТОМ, БЕЗ ГОЛОСА!
+                    if IS_TRIGGERED:
+                        print(f"🔴 ТРИГГЕР - отправляю ТЕКСТОМ (без голоса)")
+                        await message.reply(text_ru)
+                    else:
+                        # Нормальный ответ с голосом
+                        await send_dual_response(message, text_ru, text_az)
+                
                 elif text_ru:
                     print(f"⚠️ Только РУ найден")
                     await message.reply(text_ru)
@@ -655,7 +671,6 @@ async def handle_regime_callback(query: CallbackQuery):
     else:
         return
     
-    # Редактируем сообщение с новым текстом и обновляем кнопки
     try:
         await query.message.edit_text(
             message_text,
@@ -673,7 +688,6 @@ async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Модель не загружена"
     
-    # Режим
     mode_display = REGIME_NAMES.get(CURRENT_MODE, "❓ Неизвестно")
     
     voice_lang = "🇦🇿 Azərbaycanca (Banu)" if CURRENT_VOICE == "az" else "🇷🇺 Русский (Svetlana)"
@@ -763,7 +777,7 @@ async def pic_handler(message: Message):
     
     status_msg = await message.answer("🎨 Генерирую картинку...\n⏳ Подожди...")
     
-    image_data = await generate_image_fooocus(command_text)
+    image_data = await generate_image_pollinations(command_text)
     
     if image_data:
         try:
@@ -790,7 +804,7 @@ async def pic_handler(message: Message):
 # --- ГЛАВНЫЙ ХЕНДЛЕР (ПОСЛЕДНИЙ!) ---
 @dp.message()
 async def main_handler(message: Message):
-    global ACTIVE_MODEL, ACTIVE_MODEL_NAME
+    global ACTIVE_MODEL, ACTIVE_MODEL_NAME, IS_TRIGGERED
     
     if not ACTIVE_MODEL:
         status_msg = await message.answer("⏳ Загрузка...")
@@ -809,6 +823,8 @@ async def main_handler(message: Message):
     text_to_check = message.text or message.caption or ""
     is_triggered = check_trigger_words(text_to_check)
     is_addressed = await is_addressed_to_bot(message, bot_user)
+    
+    IS_TRIGGERED = is_triggered  # ← Сохраняем статус для process_with_retry
     
     # Если нет ни триггера, ни адресации - игнорируем
     if not is_triggered and not is_addressed:
