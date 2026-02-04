@@ -32,6 +32,7 @@ GOOGLE_KEYS = [
     os.getenv("GOOGLE_API_KEY_5"),
     os.getenv("GOOGLE_API_KEY_6"),
 ]
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 GOOGLE_KEYS = [k for k in GOOGLE_KEYS if k]
@@ -80,10 +81,15 @@ WESTERN_KEYWORDS = {
     "нато", "евросоюз", "ес"
 }
 
+# --- ЗАПРЕТНЫЕ СЛОВА ---
+FORBIDDEN_WORDS_AZ = {
+    "peysar", "peysər", "пейсар",
+}
+
 # --- ГОЛОСА ---
 VOICES = {
-    "az": "az-AZ-BanuNeural",           # Азербайджанский - Banu (женский)
-    "ru": "ru-RU-SvetlanaNeural",      # Русский - Svetlana (женский, cheerful)
+    "az": "az-AZ-BanuNeural",
+    "ru": "ru-RU-SvetlanaNeural",
 }
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
@@ -97,7 +103,7 @@ ACTIVE_MODEL = None
 ACTIVE_MODEL_NAME = "Searching..."
 CURRENT_API_KEY_INDEX = 0
 MODEL_LIMITS = {}
-CURRENT_VOICE = "az"  # По умолчанию азербайджанский
+CURRENT_VOICE = "az"
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def detect_system_prompt(text: str) -> str:
@@ -115,14 +121,16 @@ def clean_text_for_speech(text: str) -> str:
     text = text.replace("*", "").replace("_", "").replace("`", "").replace("**", "").replace("__", "")
     return text.strip()
 
+def contains_forbidden_words(text: str) -> bool:
+    """Проверяет наличие запретных слов."""
+    text_lower = text.lower()
+    for word in FORBIDDEN_WORDS_AZ:
+        if word in text_lower:
+            return True
+    return False
+
 def parse_dual_response(response_text: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Парсит ответ в формате:
-    RU: [текст на русском]
-    AZ: [текст на азербайджанском]
-    
-    Возвращает (text_ru, text_az)
-    """
+    """Парсит ответ в формате RU: ... AZ: ..."""
     try:
         ru_match = re.search(r'RU:\s*(.+?)(?=\nAZ:|AZ:)', response_text, re.DOTALL)
         az_match = re.search(r'AZ:\s*(.+?)(?:\n|$)', response_text, re.DOTALL)
@@ -308,35 +316,27 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     
     return prompt_parts, temp_files_to_delete
 
-# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (С СТИЛЯМИ) ---
+# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ ---
 async def send_dual_response(message: Message, text_ru: str, text_az: str):
-    """
-    Отправляет ОДНО сообщение:
-    - Голосовое на выбранном языке со стилем
-    - Caption с текстом
-    """
+    """Отправляет голосовое сообщение с текстом."""
     
     filename = f"voice_{message.message_id}.mp3"
     
     try:
         if CURRENT_VOICE == "ru":
-            VOICE = VOICES["ru"]  # Svetlana - русский
-            text_to_voice = text_ru
-            print(f"🎤 Синтезирую голос (Svetlana - ru-RU, CHEERFUL)...")
-            
-            # SSML с стилем для русского голоса
+            VOICE = VOICES["ru"]
             clean_text = clean_text_for_speech(text_ru)
+            
             if len(clean_text) > 500:
                 clean_text = clean_text[:500]
             
-            # Используем SSML для добавления стиля
-            ssml_text = f'<speak><voice name="{VOICE}" style="cheerful">{clean_text}</voice></speak>'
+            print(f"🎤 Синтезирую голос (Svetlana - ru-RU)...")
             print(f"   Озвучиваю: {clean_text[:60]}...")
             
-            communicate = edge_tts.Communicate(ssml_text, VOICE, rate="+5%")
+            communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
+            caption = text_ru
         else:
-            VOICE = VOICES["az"]  # Banu - азербайджанский
-            text_to_voice = text_az
+            VOICE = VOICES["az"]
             print(f"🎤 Синтезирую голос (Banu - az-AZ)...")
             
             clean_text = clean_text_for_speech(text_az)
@@ -346,12 +346,10 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             print(f"   Озвучиваю: {clean_text[:60]}...")
             
             communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
+            caption = text_az
         
         await communicate.save(filename)
         print(f"✅ Аудио создано")
-        
-        # Выбираем caption в зависимости от голоса
-        caption = text_ru if CURRENT_VOICE == "ru" else text_az
         
         voice_file = FSInputFile(filename)
         await message.reply_voice(
@@ -372,49 +370,44 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             except:
                 pass
 
-# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (GOOGLE IMAGEN) ---
-async def generate_image_google(prompt: str, message_id: int) -> Optional[str]:
+# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (REPLICATE FLUX) ---
+async def generate_image_flux(prompt: str) -> Optional[str]:
     """
-    Генерирует картинку через Google Imagen
-    Возвращает путь к сохраненной картинке или None
+    Генерирует картинку через Replicate Flux API
+    Возвращает URL картинки или None
     """
     
+    if not REPLICATE_API_TOKEN:
+        print("⚠️ REPLICATE_API_TOKEN не установлен")
+        return None
+    
     try:
-        print(f"🎨 Генерирую картинку: {prompt[:60]}...")
+        print(f"🎨 Генерирую картинку Flux: {prompt[:60]}...")
         
-        # Используем Gemini для генерации картинок
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        import replicate
         
-        full_prompt = f"""Generate a beautiful, high-quality, highly detailed 4K image based on this description:
-
-{prompt}
-
-Make it realistic, professional, and visually stunning."""
+        # Используем Flux Schnell (быстро и хорошо качество)
+        output = await asyncio.to_thread(
+            replicate.run,
+            "black-forest-labs/flux-schnell",
+            api_token=REPLICATE_API_TOKEN,
+            input={
+                "prompt": f"{prompt}, 4k, high quality, detailed, professional photo",
+                "aspect_ratio": "1:1",
+                "num_outputs": 1,
+            }
+        )
         
-        print(f"📤 Отправляю запрос на генерацию...")
-        
-        response = await model.generate_content_async(full_prompt)
-        
-        if response and response.text:
-            print(f"📨 Получен ответ от API")
-            print(f"   Длина ответа: {len(response.text)} символов")
-            
-            # Проверяем есть ли в ответе URL или base64 картинки
-            if "http" in response.text:
-                print(f"✅ Найден URL картинки")
-                return response.text
-            elif "data:image" in response.text or "base64" in response.text:
-                print(f"✅ Найдена base64 картинка")
-                return response.text
-            else:
-                print(f"⚠️ Ответ: {response.text[:200]}")
-                return None
+        if output and len(output) > 0:
+            image_url = output[0]
+            print(f"✅ Картинка готова: {image_url}")
+            return image_url
         else:
-            print("❌ Пустой ответ от API")
+            print("❌ Пустой ответ от Flux")
             return None
             
     except Exception as e:
-        print(f"❌ Ошибка генерации: {e}")
+        print(f"❌ Ошибка Flux: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -447,6 +440,13 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
             
             if text_ru and text_az:
                 print(f"✅ Оба текста найдены")
+                
+                # ПРОВЕРКА ЗАПРЕТНЫХ СЛОВ
+                if contains_forbidden_words(text_az):
+                    print(f"⚠️ Обнаружены запретные слова!")
+                    await message.reply("❌ Ответ содержит недопустимый контент.")
+                    return
+                
                 await send_dual_response(message, text_ru, text_az)
             elif text_ru:
                 print(f"⚠️ Только РУ найден")
@@ -497,7 +497,7 @@ async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет"
     
-    voice_lang = "🇦🇿 Azərbaycanca (Banu)" if CURRENT_VOICE == "az" else "🇷🇺 Русский (Svetlana - CHEERFUL)"
+    voice_lang = "🇦🇿 Azərbaycanca (Banu)" if CURRENT_VOICE == "az" else "🇷🇺 Русский (Svetlana)"
     voice_status = f"🎤 Голос: {voice_lang}"
     
     limits_info = ""
@@ -508,7 +508,7 @@ async def command_start_handler(message: Message):
             if exhausted:
                 limits_info += f"  • {model}: {', '.join(exhausted)}\n"
     
-    commands_info = "\n\n📋 Команды:\n/az - Азербайджанский голос\n/ru - Русский голос (CHEERFUL)\n/banan [описание] - Генерация 4K картинки"
+    commands_info = "\n\n📋 Команды:\n/az - Азербайджанский голос\n/ru - Русский голос\n/pic [описание] - Генерация картинки Flux"
     
     await message.answer(f"🤖 **Bot Ready**\n{status}\n{voice_status}{commands_info}{limits_info}")
 
@@ -524,47 +524,37 @@ async def switch_to_ru_handler(message: Message):
     """Переключение на русский голос"""
     global CURRENT_VOICE
     CURRENT_VOICE = "ru"
-    await message.answer("🎤 Переключился на русский голос (Svetlana - CHEERFUL)")
+    await message.answer("🎤 Переключился на русский голос (Svetlana)")
 
-@dp.message(Command("banan"))
-async def banan_handler(message: Message):
-    """Генерация картинки через Google Imagen"""
+@dp.message(Command("pic"))
+async def pic_handler(message: Message):
+    """Генерация картинки через Flux"""
     
-    # Извлекаем текст после команды
-    command_text = message.text.replace("/banan", "").strip()
+    command_text = message.text.replace("/pic", "").strip()
     
     if not command_text:
-        await message.answer("⚠️ Использование: /banan [описание картинки]\n\nПример: /banan красивая картинка кота матроскина")
+        await message.answer("⚠️ Использование: /pic [описание картинки]\n\nПример: /pic красивая картинка кота матроскина в стиле масла")
         return
     
-    status_msg = await message.answer("🎨 Генерирую картинку в 4K...\n⏳ Это может занять 30-60 секунд")
+    status_msg = await message.answer("🎨 Генерирую картинку Flux...\n⏳ Это может занять 10-30 секунд")
     
-    image_result = await generate_image_google(command_text, message.message_id)
+    image_url = await generate_image_flux(command_text)
     
-    if image_result:
+    if image_url:
         try:
-            # Если это URL
-            if image_result.startswith("http"):
-                await message.answer_photo(
-                    photo=image_result,
-                    caption=f"✅ Картинка готова!\n\nPrompt: {command_text[:100]}"
-                )
-            # Если это base64 или data URL
-            elif "data:image" in image_result or "base64" in image_result:
-                await message.answer(f"✅ Картинка сгенерирована!\n\n{image_result[:200]}...")
-            else:
-                await message.answer(f"📝 Результат:\n{image_result}")
-            
+            await message.answer_photo(
+                photo=image_url,
+                caption=f"✅ Flux сгенерировал!\n\nPrompt: {command_text[:100]}"
+            )
             try:
                 await status_msg.delete()
             except:
                 pass
-                
         except Exception as e:
             print(f"❌ Ошибка отправки картинки: {e}")
-            await message.answer(f"❌ Ошибка при отправке картинки:\n{e}")
+            await message.answer(f"❌ Ошибка при отправке картинки")
     else:
-        await message.answer("❌ Ошибка генерации картинки. Попробуйте позже.")
+        await message.answer("❌ Ошибка генерации картинки. Возможно, кончились кредиты на Replicate.")
     
     try:
         await status_msg.delete()
