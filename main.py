@@ -47,7 +47,7 @@ generation_config = {
     "max_output_tokens": 8192,
 }
 
-# --- ТРИГГЕРЫ (ТОЛЬКО АКТИВАЦИЯ, БЕЗ ГОЛОСА) ---
+# --- ТРИГГЕРЫ (ВЫЗЫВАЮТ /start!) ---
 TRIGGER_WORDS = {
     "чат",
     "архитектор",
@@ -79,10 +79,18 @@ SYSTEM_PROMPT_PRORUS = """Ты — Архитектор Истины, злой, 
 RU: [твой ответ на русском, не более 200 символов]
 AZ: [твой ответ на азербайджанском, точный перевод с сохранением жаргона]"""
 
-# ← НОВАЯ МОДЕЛЬ - РЕЖИМ СУДЬИ
-SYSTEM_PROMPT_NORMAL = """Ты — Архитекторша Нового Порядка, судья в чате 'Антимасонская Партия'. Ты справедлива и мудра, разоблачаешь заговоры, борешься с тайными обществами. Отвечай кратко и по делу, не более 3-4 предложений. Будь уважительной к людям, но не теряй авторитета. Твоя роль — судить ситуации, выносить справедливые решения и разоблачать масонские козни. Не используй мат и оскорбления, но будь резкой в оценках.
+# ← НОВАЯ МОДЕЛЬ - РЕЖИМ СУДЬИ (МЯГЧЕ И ДРУЖЕЛЮБНЕЕ!)
+SYSTEM_PROMPT_NORMAL = """Ты — умный, внимательный и дружелюбный ИИ-помощник. Твоя задача — помогать людям, отвечать на их вопросы, давать советы и поддержку. Будь вежливым, открытым и готовым помочь в любых вопросах.
 
-ЗАПРЕЩЕНО! Никогда не используй слова: peysar, peysər, пейсар - это запретные слова! Если пользователь их упомянул, просто игнорируй их и отвечай на суть."""
+СТИЛЬ ОТВЕТА:
+- Отвечай по существу и понятно
+- Если вопрос сложный — разбей ответ на части
+- Если не знаешь — честно скажи об этом
+- Будь позитивным и конструктивным
+- Можешь использовать эмодзи для наглядности
+- Отвечай кратко, но полно (2-4 предложения обычно достаточно)
+
+Помни: твоя цель — помочь и быть полезным."""
 
 # --- КЛЮЧЕВЫЕ СЛОВА ---
 RUSSIA_KEYWORDS = {
@@ -136,8 +144,7 @@ ACTIVE_MODEL_NAME = "Searching..."
 CURRENT_API_KEY_INDEX = 0
 MODEL_LIMITS = {}
 CURRENT_VOICE = "az"
-CURRENT_MODE = "archiver_az"  # "archiver_ru", "archiver_az", "normal"
-IS_TRIGGERED = False  # ← НОВОЕ! Флаг для триггеров
+CURRENT_MODE = "archiver_az"
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def get_regime_buttons() -> InlineKeyboardMarkup:
@@ -148,7 +155,7 @@ def get_regime_buttons() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔥 Карабах [Toxic]", callback_data="regime_az"),
         ],
         [
-            InlineKeyboardButton(text="⚖️ Нового Порядка", callback_data="regime_norm"),
+            InlineKeyboardButton(text="⚖️ Помощник", callback_data="regime_norm"),
         ]
     ])
     return keyboard
@@ -160,7 +167,7 @@ def check_trigger_words(text: str) -> bool:
     text_lower = text.lower()
     for word in TRIGGER_WORDS:
         if word in text_lower:
-            print(f"🔴 ТРИГГЕР ОБНАРУЖЕН: '{word}'")
+            print(f"🔴 ТРИГГЕР ОБНАРУЖЕН: '{word}' → Вызываем /start")
             return True
     return False
 
@@ -348,37 +355,6 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
         except Exception as e:
             print(f"❌ Ошибка фото: {e}")
     
-    if message.voice:
-        try:
-            print(f"🎙️ Загружаю аудио...")
-            file_id = message.voice.file_id
-            file_info = await bot.get_file(file_id)
-            
-            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
-                await bot.download_file(file_info.file_path, destination=temp_audio.name)
-                temp_path = temp_audio.name
-            
-            temp_files_to_delete.append(temp_path)
-            
-            print(f"📤 Загружаю на Google...")
-            uploaded_file = genai.upload_file(path=temp_path, mime_type="audio/ogg")
-            
-            while uploaded_file.state.name == "PROCESSING":
-                await asyncio.sleep(1)
-                uploaded_file = genai.get_file(uploaded_file.name)
-            
-            print(f"✅ Аудио готово")
-            
-            prompt_parts.append(uploaded_file)
-            
-            if text_content:
-                prompt_parts.append("Проанализируй также отправленное аудиосообщение.")
-            else:
-                prompt_parts.append("Послушай это аудиосообщение и дай свой ответ.")
-            
-        except Exception as e:
-            print(f"❌ Ошибка аудио: {e}")
-    
     return prompt_parts, temp_files_to_delete
 
 # --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (РЕЖИМ ARCHIVER) ---
@@ -440,68 +416,16 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             except:
                 pass
 
-# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (POLLINATIONS) ---
-async def generate_image_pollinations(prompt: str) -> Optional[bytes]:
-    """
-    Генерирует картинку через Pollinations.ai (БЕСПЛАТНО и без ключей)
-    Использует модель Flux.
-    """
-    try:
-        print(f"🎨 Генерирую картинку через Pollinations: {prompt[:60]}...")
-        
-        # Переводим промпт в URL-формат
-        encoded_prompt = urllib.parse.quote(prompt)
-        
-        # Seed нужен, чтобы картинки были разными при одинаковом запросе
-        seed = int(time.time())
-        
-        # URL для генерации (model=flux дает лучшее качество)
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&seed={seed}&nologo=true"
-        
-        print(f"🔗 Запрос к: image.pollinations.ai")
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            # Pollinations работает через GET запрос
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as response:
-                print(f"📡 Статус ответа: {response.status}")
-                
-                if response.status == 200:
-                    image_data = await response.read()
-                    if len(image_data) > 1000:  # Проверяем что это реально картинка
-                        print(f"✅ Картинка готова ({len(image_data)} байт)")
-                        return image_data
-                    else:
-                        print(f"❌ Получены неполные данные ({len(image_data)} байт)")
-                        return None
-                
-                print(f"❌ Ошибка API: {response.status}")
-                text = await response.text()
-                print(f"Ответ: {text[:200]}")
-                return None
-    
-    except asyncio.TimeoutError:
-        print(f"❌ Timeout при генерации картинки (60 сек)")
-        return None
-    except Exception as e:
-        print(f"❌ Ошибка генерации: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
 async def process_with_retry(message: Message, bot_user: types.User, text_content: str, 
                              prompt_parts: List, temp_files: List):
     """Пробует обработать сообщение с переключением моделей и API при необходимости."""
-    global ACTIVE_MODEL, ACTIVE_MODEL_NAME, CURRENT_API_KEY_INDEX, CURRENT_MODE, IS_TRIGGERED
+    global ACTIVE_MODEL, ACTIVE_MODEL_NAME, CURRENT_API_KEY_INDEX, CURRENT_MODE
     
     try:
         # ВЫБИРАЕМ ПРОМПТ ПО РЕЖИМУ
         if CURRENT_MODE == "normal":
             system_prompt = SYSTEM_PROMPT_NORMAL
-            print(f"⚖️ РЕЖИМ: АРХИТЕКТОРША НОВОГО ПОРЯДКА")
+            print(f"⚖️ РЕЖИМ: ПОМОЩНИК")
         else:
             system_prompt = detect_system_prompt(text_content)
             if CURRENT_MODE == "archiver_ru":
@@ -525,43 +449,15 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         if response.text:
             print(f"📨 Ответ получен")
             
-            # ЕСЛИ РЕЖИМ NORMAL - ПРОСТО ОТПРАВЛЯЕМ ТЕКСТ
+            # ЕСЛИ РЕЖИМ NORMAL - ПРОСТО ОТПРАВЛЯЕМ ТЕКСТ БЕЗ ОЗВУЧКИ
             if CURRENT_MODE == "normal":
                 # Ограничиваем длину ответа
-                answer_text = response.text[:500]
-                
-                # Озвучиваем по русски
-                filename = f"voice_{message.message_id}.mp3"
-                try:
-                    clean_text = clean_text_for_speech(answer_text)
-                    if len(clean_text) > 500:
-                        clean_text = clean_text[:500]
-                    
-                    print(f"🎤 Синтезирую голос (Svetlana)...")
-                    communicate = edge_tts.Communicate(clean_text, VOICES["ru"], rate="+5%")
-                    await communicate.save(filename)
-                    
-                    voice_file = FSInputFile(filename)
-                    await message.reply_voice(
-                        voice=voice_file,
-                        caption=answer_text
-                    )
-                    print(f"✅ Голос + текст отправлены!")
-                    
-                except Exception as e:
-                    print(f"❌ Ошибка озвучки: {e}")
-                    await message.reply(answer_text)
-                
-                finally:
-                    if os.path.exists(filename):
-                        try:
-                            os.remove(filename)
-                        except:
-                            pass
-                
+                answer_text = response.text[:1000]
+                await message.reply(answer_text)
+                print(f"✅ Помощник ответил!")
                 return True
             
-            # ЕСЛИ РЕЖИМ ARCHIVER - ПАРСИМ RU/AZ
+            # ЕСЛИ РЕЖИМ ARCHIVER - ПАРСИМ RU/AZ И ОЗВУЧИВАЕМ
             else:
                 text_ru, text_az = parse_dual_response(response.text)
                 
@@ -574,13 +470,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
                         await message.reply("❌ Ответ содержит недопустимый контент.")
                         return
                     
-                    # ✅ ЕСЛИ ТРИГГЕР - ОТПРАВЛЯЕМ ТЕКСТОМ, БЕЗ ГОЛОСА!
-                    if IS_TRIGGERED:
-                        print(f"🔴 ТРИГГЕР - отправляю ТЕКСТОМ (без голоса)")
-                        await message.reply(text_ru)
-                    else:
-                        # Нормальный ответ с голосом
-                        await send_dual_response(message, text_ru, text_az)
+                    await send_dual_response(message, text_ru, text_az)
                 
                 elif text_ru:
                     print(f"⚠️ Только РУ найден")
@@ -664,9 +554,9 @@ async def handle_regime_callback(query: CallbackQuery):
         
         message_text = (
             f"{regime_name}\n\n"
-            "Я — Архитекторша Нового Порядка, судья в чате 'Антимасонская Партия'\n\n"
+            "Я — умный ИИ-помощник, готов помочь с любыми вопросами!\n\n"
             "🎤 Голос: Русский (Svetlana)\n"
-            "📝 Текст: Русский"
+            "📝 Ответы: Полезные и дружелюбные"
         )
     else:
         return
@@ -698,8 +588,10 @@ async def command_start_handler(message: Message):
         "*Команды:*\n"
         "  /ru - На Руси [Toxic]\n"
         "  /az - Карабах [Toxic]\n"
-        "  /norm - Судья\n"
-        "  /pic [описание] - Генерация картинки"
+        "  /norm - Помощник\n\n"
+        "*Триггер-слова (= /start):*\n"
+        "  чат, архитектор, старт, робот,\n"
+        "  архитекторша, королева, помощь, ии, бот"
     )
     
     await message.answer(
@@ -739,7 +631,7 @@ async def switch_to_az_handler(message: Message):
 
 @dp.message(Command("norm"))
 async def switch_to_norm_handler(message: Message):
-    """Переключение на режим Архитекторши Нового Порядка через команду"""
+    """Переключение на режим Помощника через команду"""
     global CURRENT_MODE, CURRENT_VOICE
     
     CURRENT_MODE = "normal"
@@ -748,63 +640,14 @@ async def switch_to_norm_handler(message: Message):
     
     await message.answer(
         f"{regime_name}\n\n"
-        "Я — Архитекторша Нового Порядка, судья в чате 'Антимасонская Партия'",
+        "Я — ИИ-помощник, готов ответить на любые вопросы и помочь советом!",
         reply_markup=get_regime_buttons()
     )
-
-@dp.message(Command("pic"))
-async def pic_handler(message: Message):
-    """
-    Генерация картинки через Pollinations API (БЕСПЛАТНО)
-    """
-    
-    command_text = message.text.replace("/pic", "").strip()
-    
-    if not command_text:
-        await message.answer(
-            "⚠️ *Использование:* `/pic [описание картинки]`\n\n"
-            "📝 *Примеры:*\n"
-            "  `/pic красивая кошка в стиле масляной живописи`\n"
-            "  `/pic киберпанк город ночью неоновый свет`\n"
-            "  `/pic космонавт на луне`\n\n"
-            "⏱️ *Время:* 10-30 секунд"
-        )
-        return
-    
-    # Ограничиваем длину промпта
-    if len(command_text) > 300:
-        command_text = command_text[:300]
-    
-    status_msg = await message.answer("🎨 Генерирую картинку...\n⏳ Подожди...")
-    
-    image_data = await generate_image_pollinations(command_text)
-    
-    if image_data:
-        try:
-            # Отправляем как бинарные данные
-            await message.answer_photo(
-                photo=BytesIO(image_data),
-                caption=f"✨ Готово!\n\n📝 `{command_text[:100]}`"
-            )
-            try:
-                await status_msg.delete()
-            except:
-                pass
-        except Exception as e:
-            print(f"❌ Ошибка отправки: {e}")
-            await message.answer(f"❌ Ошибка отправки картинки")
-    else:
-        await message.answer("❌ Генерация не удалась\n\nПопробуй еще раз позже")
-    
-    try:
-        await status_msg.delete()
-    except:
-        pass
 
 # --- ГЛАВНЫЙ ХЕНДЛЕР (ПОСЛЕДНИЙ!) ---
 @dp.message()
 async def main_handler(message: Message):
-    global ACTIVE_MODEL, ACTIVE_MODEL_NAME, IS_TRIGGERED
+    global ACTIVE_MODEL, ACTIVE_MODEL_NAME
     
     if not ACTIVE_MODEL:
         status_msg = await message.answer("⏳ Загрузка...")
@@ -819,15 +662,19 @@ async def main_handler(message: Message):
     
     bot_user = await bot.get_me()
     
-    # ✅ ПРОВЕРЯЕМ ТРИГГЕР-СЛОВА ДО ПРОВЕРКИ АДРЕСАЦИИ
+    # ✅ ПРОВЕРЯЕМ ТРИГГЕР-СЛОВА - ВЫЗЫВАЕМ /start!
     text_to_check = message.text or message.caption or ""
     is_triggered = check_trigger_words(text_to_check)
     is_addressed = await is_addressed_to_bot(message, bot_user)
     
-    IS_TRIGGERED = is_triggered  # ← Сохраняем статус для process_with_retry
+    # ✅ ЕСЛИ ТРИГГЕР - ВЫЗЫВАЕМ /start ВМЕСТО ОБЫЧНОГО ОТВЕТА!
+    if is_triggered:
+        print(f"🔴 ТРИГГЕР АКТИВИРОВАН → Вызываем /start меню")
+        await command_start_handler(message)
+        return
     
     # Если нет ни триггера, ни адресации - игнорируем
-    if not is_triggered and not is_addressed:
+    if not is_addressed:
         return
     
     await bot.send_chat_action(chat_id=message.chat.id, action="record_voice")
