@@ -16,7 +16,7 @@ import edge_tts
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile
 from aiogram.client.default import DefaultBotProperties
 
@@ -33,6 +33,7 @@ GOOGLE_KEYS = [
     os.getenv("GOOGLE_API_KEY_6"),
 ]
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
+NANOBANA_API_KEY = os.getenv("NANOBANA_API_KEY", "")  # Добавь в .env
 
 GOOGLE_KEYS = [k for k in GOOGLE_KEYS if k]
 
@@ -80,6 +81,12 @@ WESTERN_KEYWORDS = {
     "нато", "евросоюз", "ес"
 }
 
+# --- ГОЛОСА ---
+VOICES = {
+    "az": "az-AZ-BanuNeural",      # Азербайджанский - Banu (женский)
+    "ru": "ru-RU-DariaNeural",     # Русский - Daria (женский)
+}
+
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher()
 app = FastAPI()
@@ -91,6 +98,7 @@ ACTIVE_MODEL = None
 ACTIVE_MODEL_NAME = "Searching..."
 CURRENT_API_KEY_INDEX = 0
 MODEL_LIMITS = {}
+CURRENT_VOICE = "az"  # По умолчанию азербайджанский
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def detect_system_prompt(text: str) -> str:
@@ -117,9 +125,7 @@ def parse_dual_response(response_text: str) -> Tuple[Optional[str], Optional[str
     Возвращает (text_ru, text_az)
     """
     try:
-        # Ищем RU: до AZ:
         ru_match = re.search(r'RU:\s*(.+?)(?=\nAZ:|AZ:)', response_text, re.DOTALL)
-        # Ищем AZ: до конца или переноса строки
         az_match = re.search(r'AZ:\s*(.+?)(?:\n|$)', response_text, re.DOTALL)
         
         text_ru = ru_match.group(1).strip() if ru_match else None
@@ -303,45 +309,52 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     
     return prompt_parts, temp_files_to_delete
 
-# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (ОДНО СООБЩЕНИЕ) ---
+# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (С ВЫБИРАЕМЫМ ГОЛОСОМ) ---
 async def send_dual_response(message: Message, text_ru: str, text_az: str):
     """
     Отправляет ОДНО сообщение:
-    - Голосовое на АЗЕРБАЙДЖАНСКОМ (голос Babek)
-    - Caption с текстом на РУССКОМ
+    - Голосовое на выбранном языке
+    - Caption с текстом
     """
     
-    # Азербайджанский голос Babek - идеально подходит!
-    VOICE = "az-AZ-BabekNeural"
+    # Выбираем голос в зависимости от CURRENT_VOICE
+    if CURRENT_VOICE == "ru":
+        VOICE = VOICES["ru"]  # Daria - русский
+        text_to_voice = text_ru
+        print(f"🎤 Синтезирую голос (Daria - ru-RU)...")
+    else:
+        VOICE = VOICES["az"]  # Banu - азербайджанский
+        text_to_voice = text_az
+        print(f"🎤 Синтезирую голос (Banu - az-AZ)...")
+    
     filename = f"voice_{message.message_id}.mp3"
     
     try:
-        # ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ГОЛОСОМ BABEK
-        clean_text_az = clean_text_for_speech(text_az)
+        clean_text = clean_text_for_speech(text_to_voice)
         
-        if not clean_text_az:
-            print("⚠️ АЗ текст пуст")
+        if not clean_text:
+            print("⚠️ Текст пуст")
             return
         
-        if len(clean_text_az) > 500:
-            clean_text_az = clean_text_az[:500]
+        if len(clean_text) > 500:
+            clean_text = clean_text[:500]
         
-        print(f"🎤 Синтезирую голос (Babek - az-AZ)...")
-        print(f"   Озвучиваю АЗ текст: {clean_text_az[:60]}...")
+        print(f"   Озвучиваю: {clean_text[:60]}...")
         
-        # ПЕРЕДАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ГОЛОСУ BABEK
-        communicate = edge_tts.Communicate(clean_text_az, VOICE, rate="+5%")
+        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
         await communicate.save(filename)
         
         print(f"✅ Аудио создано")
         
-        # ОТПРАВЛЯЕМ ГОЛОС С РУССКИМ ТЕКСТОМ КАК CAPTION (ОДНО СООБЩЕНИЕ)
+        # Выбираем caption в зависимости от голоса
+        caption = text_ru if CURRENT_VOICE == "ru" else text_az
+        
         voice_file = FSInputFile(filename)
         await message.reply_voice(
             voice=voice_file,
-            caption=text_ru  # Русский текст как подпись под голосом
+            caption=caption
         )
-        print(f"✅ Голос Babek + текст отправлены в одном сообщении!")
+        print(f"✅ Голос отправлен!")
         
     except Exception as e:
         print(f"❌ Ошибка озвучки: {e}")
@@ -354,6 +367,54 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
                 os.remove(filename)
             except:
                 pass
+
+# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (NANOBANA) ---
+async def generate_image_nanobana(prompt: str) -> Optional[str]:
+    """
+    Генерирует картинку через nanobana API
+    Возвращает URL картинки или None
+    """
+    
+    if not NANOBANA_API_KEY:
+        print("⚠️ NANOBANA_API_KEY не установлен")
+        return None
+    
+    try:
+        print(f"🎨 Отправляю prompt в Nanobana: {prompt[:60]}...")
+        
+        headers = {
+            "Authorization": f"Bearer {NANOBANA_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "prompt": prompt,
+            "model": "flux-pro",  # Или другая модель
+            "num_images": 1,
+            "size": "1024x1024",  # 4K будет дороже
+            "quality": "high"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.nanobana.com/v1/images/generations",
+                headers=headers,
+                json=data,
+                timeout=aiohttp.ClientTimeout(total=120)
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    image_url = result["data"][0]["url"]
+                    print(f"✅ Картинка готова: {image_url}")
+                    return image_url
+                else:
+                    error_text = await resp.text()
+                    print(f"❌ Ошибка Nanobana ({resp.status}): {error_text}")
+                    return None
+    
+    except Exception as e:
+        print(f"❌ Ошибка генерации: {e}")
+        return None
 
 async def process_with_retry(message: Message, bot_user: types.User, text_content: str, 
                              prompt_parts: List, temp_files: List):
@@ -379,7 +440,6 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         if response.text:
             print(f"📨 Ответ получен")
             
-            # ПАРСИМ ОТВЕТ
             text_ru, text_az = parse_dual_response(response.text)
             
             if text_ru and text_az:
@@ -433,7 +493,9 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет"
-    voice_status = "🎤 Голос: Babek (az-AZ) + Текст РУ (одно сообщение)"
+    
+    voice_lang = "🇦🇿 Azərbaycanca (Banu)" if CURRENT_VOICE == "az" else "🇷🇺 Русский (Daria)"
+    voice_status = f"🎤 Голос: {voice_lang}"
     
     limits_info = ""
     if MODEL_LIMITS:
@@ -443,7 +505,50 @@ async def command_start_handler(message: Message):
             if exhausted:
                 limits_info += f"  • {model}: {', '.join(exhausted)}\n"
     
-    await message.answer(f"🤖 **Bot Ready**\n{status}\n{voice_status}{limits_info}")
+    commands_info = "\n\n📋 Команды:\n/az - Азербайджанский голос\n/ru - Русский голос\n/banan [prompt] - Генерация картинки"
+    
+    await message.answer(f"🤖 **Bot Ready**\n{status}\n{voice_status}{commands_info}{limits_info}")
+
+@dp.message(Command("az"))
+async def switch_to_az_handler(message: Message):
+    """Переключение на азербайджанский голос"""
+    global CURRENT_VOICE
+    CURRENT_VOICE = "az"
+    await message.answer("🎤 Переключился на азербайджанский голос (Banu)")
+
+@dp.message(Command("ru"))
+async def switch_to_ru_handler(message: Message):
+    """Переключение на русский голос"""
+    global CURRENT_VOICE
+    CURRENT_VOICE = "ru"
+    await message.answer("🎤 Переключился на русский голос (Daria)")
+
+@dp.message(Command("banan"))
+async def banan_handler(message: Message):
+    """Генерация картинки через nanobana"""
+    
+    # Извлекаем текст после команды
+    command_text = message.text.replace("/banan", "").strip()
+    
+    if not command_text:
+        await message.answer("⚠️ Использование: /banan [описание картинки]")
+        return
+    
+    await message.answer("🎨 Генерирую картинку...")
+    
+    image_url = await generate_image_nanobana(command_text)
+    
+    if image_url:
+        try:
+            await message.answer_photo(
+                photo=image_url,
+                caption=f"✅ Готово!\n\nPrompt: {command_text}"
+            )
+        except Exception as e:
+            print(f"❌ Ошибка отправки картинки: {e}")
+            await message.answer(f"❌ Не удалось отправить картинку.\n\nURL: {image_url}")
+    else:
+        await message.answer("❌ Ошибка генерации картинки")
 
 @dp.message()
 async def main_handler(message: Message):
@@ -493,7 +598,7 @@ async def root():
     return {
         "status": "Alive",
         "model": ACTIVE_MODEL_NAME,
-        "voice": "Babek (az-AZ)",
+        "voice": VOICES[CURRENT_VOICE],
         "api": f"{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)}"
     }
 
