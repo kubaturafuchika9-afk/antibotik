@@ -6,3 +6,5 @@ aiohttp
 python-multipart
 pillow
 edge-tts
+requests
+urllib3
