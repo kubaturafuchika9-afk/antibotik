@@ -436,53 +436,43 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             except:
                 pass
 
-# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (FOOOCUS API) ---
+# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (POLLINATIONS) ---
 async def generate_image_fooocus(prompt: str) -> Optional[bytes]:
     """
-    Генерирует картинку через Fooocus (БЕСПЛАТНО!)
+    Генерирует картинку через Pollinations.ai (БЕСПЛАТНО и без ключей)
+    Использует модель Flux или схожую.
     """
-    
     try:
-        print(f"🎨 Генерирую картинку Fooocus: {prompt[:60]}...")
+        print(f"🎨 Генерирую картинку через Pollinations: {prompt[:60]}...")
         
-        # Используем Fooocus API
-        url = "https://api.foocusai.com/v1/images/generations"
+        # Переводим промпт в URL-формат
+        encoded_prompt = urllib.parse.quote(prompt)
         
-        payload = {
-            "prompt": f"{prompt}, 4k, high quality, detailed",
-            "image_num": 1,
-            "style": "default",
-            "quality": "quality",
-        }
+        # Seed нужен, чтобы картинки были разными при одинаковом запросе
+        seed = int(time.time())
+        
+        # URL для генерации (model=flux дает лучшее качество сейчас)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&seed={seed}&nologo=true"
+        
+        print(f"🔗 URL: {url[:100]}...")
         
         headers = {
-            "User-Agent": "Mozilla/5.0"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
         
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=120), headers=headers) as response:
+            # Pollinations работает через GET запрос, а не POST
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as response:
                 print(f"📡 Статус ответа: {response.status}")
                 
                 if response.status == 200:
-                    data = await response.json()
-                    
-                    if data and "images" in data and len(data["images"]) > 0:
-                        image_url = data["images"][0]
-                        
-                        # Скачиваем картинку
-                        async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as img_response:
-                            if img_response.status == 200:
-                                image_data = await img_response.read()
-                                print(f"✅ Картинка готова ({len(image_data)} байт)")
-                                return image_data
-                    
-                    print("❌ Нет картинок в ответе")
-                    return None
-                else:
-                    text = await response.text()
-                    print(f"❌ Ошибка Fooocus: {response.status}")
-                    print(f"❌ Ответ: {text[:200]}")
-                    return None
+                    image_data = await response.read()
+                    if len(image_data) > 0:
+                        print(f"✅ Картинка готова ({len(image_data)} байт)")
+                        return image_data
+                
+                print(f"❌ Ошибка API: {response.status}")
+                return None
     
     except asyncio.TimeoutError:
         print(f"❌ Timeout при генерации картинки")
@@ -751,7 +741,7 @@ async def switch_to_norm_handler(message: Message):
 @dp.message(Command("pic"))
 async def pic_handler(message: Message):
     """
-    Генерация картинки через Fooocus API (БЕСПЛАТНО)
+    Генерация картинки через Pollinations API (БЕСПЛАТНО)
     """
     
     command_text = message.text.replace("/pic", "").strip()
