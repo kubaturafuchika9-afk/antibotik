@@ -106,8 +106,8 @@ VOICES = {
 
 # --- НАЗВАНИЯ РЕЖИМОВ ---
 REGIME_NAMES = {
-    "archiver_ru": "🔥 Архитекторша на Руси",
-    "archiver_az": "🔥 Королева из Карабаха",
+    "archiver_ru": "🔥 Архитекторша на Руси [Toxic Bot]",
+    "archiver_az": "🔥 Королева из Карабаха [Toxic Bot]",
     "normal": "⚖️ Архитекторша Нового Порядка"
 }
 
@@ -130,11 +130,11 @@ def get_regime_buttons() -> InlineKeyboardMarkup:
     """Возвращает клавиатуру с кнопками режимов."""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔥 Архитекторша на Руси", callback_data="regime_ru"),
-            InlineKeyboardButton(text="🔥 Королева из Карабаха", callback_data="regime_az"),
+            InlineKeyboardButton(text="🔥 На Руси [Toxic]", callback_data="regime_ru"),
+            InlineKeyboardButton(text="🔥 Карабах [Toxic]", callback_data="regime_az"),
         ],
         [
-            InlineKeyboardButton(text="⚖️ Архитекторша Нового Порядка", callback_data="regime_norm"),
+            InlineKeyboardButton(text="⚖️ Нового Порядка", callback_data="regime_norm"),
         ]
     ])
     return keyboard
@@ -418,45 +418,56 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             except:
                 pass
 
-# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (POLLINATIONS) ---
-async def generate_image_pollinations(prompt: str) -> Optional[bytes]:
+# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (FOOOCUS API) ---
+async def generate_image_fooocus(prompt: str) -> Optional[bytes]:
     """
-    Генерирует картинку через Pollinations (ПОЛНОСТЬЮ БЕСПЛАТНО!)
-    Без регистрации, без карты, без ограничений!
-    Возвращает бинарные данные картинки или None
+    Генерирует картинку через Fooocus (БЕСПЛАТНО!)
     """
     
     try:
-        # Кодируем промпт для URL
-        encoded_prompt = urllib.parse.quote(prompt)
+        print(f"🎨 Генерирую картинку Fooocus: {prompt[:60]}...")
         
-        print(f"🎨 Генерирую картинку Pollinations: {prompt[:60]}...")
-        print(f"🔗 URL: https://image.pollinations.ai/prompt/{encoded_prompt}")
+        # Используем Fooocus API
+        url = "https://api.foocusai.com/v1/images/generations"
         
-        # URL Pollinations API
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+        payload = {
+            "prompt": f"{prompt}, 4k, high quality, detailed",
+            "image_num": 1,
+            "style": "default",
+            "quality": "quality",
+        }
         
-        # Делаем асинхронный запрос с заголовками
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0"
         }
         
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120), headers=headers) as response:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=120), headers=headers) as response:
                 print(f"📡 Статус ответа: {response.status}")
                 
                 if response.status == 200:
-                    image_data = await response.read()
-                    print(f"✅ Картинка готова ({len(image_data)} байт)")
-                    return image_data
+                    data = await response.json()
+                    
+                    if data and "images" in data and len(data["images"]) > 0:
+                        image_url = data["images"][0]
+                        
+                        # Скачиваем картинку
+                        async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as img_response:
+                            if img_response.status == 200:
+                                image_data = await img_response.read()
+                                print(f"✅ Картинка готова ({len(image_data)} байт)")
+                                return image_data
+                    
+                    print("❌ Нет картинок в ответе")
+                    return None
                 else:
                     text = await response.text()
-                    print(f"❌ Ошибка Pollinations: {response.status}")
+                    print(f"❌ Ошибка Fooocus: {response.status}")
                     print(f"❌ Ответ: {text[:200]}")
                     return None
     
     except asyncio.TimeoutError:
-        print(f"❌ Timeout при генерации картинки (120 сек)")
+        print(f"❌ Timeout при генерации картинки")
         return None
     except Exception as e:
         print(f"❌ Ошибка генерации: {e}")
@@ -607,8 +618,7 @@ async def handle_regime_callback(query: CallbackQuery):
             f"{regime_name}\n\n"
             "Архитекторша на Руси строит судьбу России через боль и справедливость!\n\n"
             "🎤 Голос: Русский (Svetlana)\n"
-            "📝 Текст: Русский + Азербайджанский\n"
-            "💬 Ответы: Агрессивные и едкие"
+            "📝 Текст: Русский + Азербайджанский"
         )
         
     elif callback_data == "regime_az":
@@ -620,8 +630,7 @@ async def handle_regime_callback(query: CallbackQuery):
             f"{regime_name}\n\n"
             "Королева из Карабаха правит Востоком железной волей справедливости!\n\n"
             "🎤 Голос: Азербайджанский (Banu)\n"
-            "📝 Текст: Русский\n"
-            "💬 Ответы: Агрессивные и мощные"
+            "📝 Текст: Русский"
         )
         
     elif callback_data == "regime_norm":
@@ -633,8 +642,7 @@ async def handle_regime_callback(query: CallbackQuery):
             f"{regime_name}\n\n"
             "Я — Архитекторша Нового Порядка, судья в чате 'Антимасонская Партия'\n\n"
             "🎤 Голос: Русский (Svetlana)\n"
-            "📝 Текст: Русский\n"
-            "💬 Ответы: Справедливые и вежливые"
+            "📝 Текст: Русский"
         )
     else:
         return
@@ -655,32 +663,25 @@ async def handle_regime_callback(query: CallbackQuery):
 @dp.message(CommandStart())
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
-    status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет"
+    status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Модель не загружена"
     
     # Режим
     mode_display = REGIME_NAMES.get(CURRENT_MODE, "❓ Неизвестно")
     
     voice_lang = "🇦🇿 Azərbaycanca (Banu)" if CURRENT_VOICE == "az" else "🇷🇺 Русский (Svetlana)"
-    voice_status = f"🎤 Голос: {voice_lang}"
-    
-    limits_info = ""
-    if MODEL_LIMITS:
-        limits_info = "\n\n📊 Исчерпано:\n"
-        for model, apis in MODEL_LIMITS.items():
-            exhausted = [f"#{k+1}" for k, v in apis.items() if v]
-            if exhausted:
-                limits_info += f"  • {model}: {', '.join(exhausted)}\n"
+    voice_status = f"🎤 {voice_lang}"
     
     commands_info = (
-        "\n\n📋 *Команды:*\n"
-        f"*Текущий режим:* {mode_display}\n\n"
-        "*Используй кнопки ниже для переключения режимов!*\n\n"
-        "*Другое:*\n"
+        "\n\n📋 *Текущий режим:* " + mode_display + "\n\n"
+        "*Команды:*\n"
+        "  /ru - На Руси [Toxic]\n"
+        "  /az - Карабах [Toxic]\n"
+        "  /norm - Судья\n"
         "  /pic [описание] - Генерация картинки"
     )
     
     await message.answer(
-        f"🤖 *Bot Ready*\n{status}\n{voice_status}{commands_info}{limits_info}",
+        f"🤖 *Bot Ready*\n{status}\n{voice_status}{commands_info}",
         reply_markup=get_regime_buttons()
     )
 
@@ -695,10 +696,7 @@ async def switch_to_ru_handler(message: Message):
     
     await message.answer(
         f"{regime_name}\n\n"
-        "Архитекторша на Руси строит судьбу России через боль и справедливость!\n\n"
-        "🎤 Голос: Русский (Svetlana)\n"
-        "📝 Текст: Русский + Азербайджанский\n"
-        "💬 Ответы: Агрессивные и едкие",
+        "Архитекторша на Руси строит судьбу России через боль и справедливость!",
         reply_markup=get_regime_buttons()
     )
 
@@ -713,10 +711,7 @@ async def switch_to_az_handler(message: Message):
     
     await message.answer(
         f"{regime_name}\n\n"
-        "Королева из Карабаха правит Востоком железной волей справедливости!\n\n"
-        "🎤 Голос: Азербайджанский (Banu)\n"
-        "📝 Текст: Русский\n"
-        "💬 Ответы: Агрессивные и мощные",
+        "Королева из Карабаха правит Востоком железной волей справедливости!",
         reply_markup=get_regime_buttons()
     )
 
@@ -731,17 +726,14 @@ async def switch_to_norm_handler(message: Message):
     
     await message.answer(
         f"{regime_name}\n\n"
-        "Я — Архитекторша Нового Порядка, судья в чате 'Антимасонская Партия'\n\n"
-        "🎤 Голос: Русский (Svetlana)\n"
-        "📝 Текст: Русский\n"
-        "💬 Ответы: Справедливые и вежливые",
+        "Я — Архитекторша Нового Порядка, судья в чате 'Антимасонская Партия'",
         reply_markup=get_regime_buttons()
     )
 
 @dp.message(Command("pic"))
 async def pic_handler(message: Message):
     """
-    Генерация картинки через Pollinations (БЕСПЛАТНО)
+    Генерация картинки через Fooocus API (БЕСПЛАТНО)
     """
     
     command_text = message.text.replace("/pic", "").strip()
@@ -752,9 +744,8 @@ async def pic_handler(message: Message):
             "📝 *Примеры:*\n"
             "  `/pic красивая кошка в стиле масляной живописи`\n"
             "  `/pic киберпанк город ночью неоновый свет`\n"
-            "  `/pic космонавт на луне с земной планетой`\n\n"
-            "⏱️ *Время генерации:* 5-15 секунд\n"
-            "💰 *Цена:* Абсолютно бесплатно!"
+            "  `/pic космонавт на луне`\n\n"
+            "⏱️ *Время:* 10-30 секунд"
         )
         return
     
@@ -762,16 +753,16 @@ async def pic_handler(message: Message):
     if len(command_text) > 300:
         command_text = command_text[:300]
     
-    status_msg = await message.answer("🎨 Генерирую картинку...\n⏳ Подожди 5-15 секунд")
+    status_msg = await message.answer("🎨 Генерирую картинку...\n⏳ Подожди...")
     
-    image_data = await generate_image_pollinations(command_text)
+    image_data = await generate_image_fooocus(command_text)
     
     if image_data:
         try:
             # Отправляем как бинарные данные
             await message.answer_photo(
                 photo=BytesIO(image_data),
-                caption=f"✨ Картинка готова!\n\n📝 *Prompt:* `{command_text[:100]}`"
+                caption=f"✨ Готово!\n\n📝 `{command_text[:100]}`"
             )
             try:
                 await status_msg.delete()
@@ -779,16 +770,9 @@ async def pic_handler(message: Message):
                 pass
         except Exception as e:
             print(f"❌ Ошибка отправки: {e}")
-            await message.answer(f"❌ Ошибка отправки картинки: {e}")
+            await message.answer(f"❌ Ошибка отправки картинки")
     else:
-        await message.answer(
-            "❌ Ошибка генерации картинки\n\n"
-            "Возможные причины:\n"
-            "  • Слишком сложный промпт\n"
-            "  • Проблема с сетью\n"
-            "  • Сервис временно недоступен\n\n"
-            "Попробуй еще раз с более простым описанием."
-        )
+        await message.answer("❌ Генерация не удалась\n\nПопробуй еще раз позже")
     
     try:
         await status_msg.delete()
@@ -846,7 +830,6 @@ async def root():
         "model": ACTIVE_MODEL_NAME,
         "voice": VOICES[CURRENT_VOICE],
         "mode": REGIME_NAMES.get(CURRENT_MODE, "Unknown"),
-        "api": f"{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)}"
     }
 
 @app.get("/health")
