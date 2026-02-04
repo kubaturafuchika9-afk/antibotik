@@ -303,12 +303,12 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     
     return prompt_parts, temp_files_to_delete
 
-# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (ТУРЕЦКИЙ ГОЛОС) ---
+# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (ОДНО СООБЩЕНИЕ) ---
 async def send_dual_response(message: Message, text_ru: str, text_az: str):
     """
-    Отправляет:
-    1. Текстовое сообщение на РУССКОМ
-    2. Голосовое сообщение с АЗЕРБАЙДЖАНСКИМ текстом (озвучка на ТУРЕЦКОМ)
+    Отправляет ОДНО сообщение:
+    - Голосовое на АЗЕРБАЙДЖАНСКОМ (озвучка на ТУРЕЦКОМ)
+    - Caption с текстом на РУССКОМ
     """
     
     # Турецкий голос (он может нормально читать азербайджанский текст)
@@ -316,12 +316,7 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
     filename = f"voice_{message.message_id}.mp3"
     
     try:
-        # 1. ОТПРАВЛЯЕМ ТЕКСТ НА РУССКОМ
-        print(f"📝 Отправляю РУ текст...")
-        await message.reply(text_ru)
-        print(f"✅ РУ отправлен")
-        
-        # 2. ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ТУРЕЦКИМ ГОЛОСОМ
+        # ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ТУРЕЦКИМ ГОЛОСОМ
         clean_text_az = clean_text_for_speech(text_az)
         
         if not clean_text_az:
@@ -340,10 +335,13 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
         
         print(f"✅ Аудио создано")
         
-        # 3. ОТПРАВЛЯЕМ ГОЛОСОВОЕ СООБЩЕНИЕ
+        # ОТПРАВЛЯЕМ ГОЛОС С РУССКИМ ТЕКСТОМ КАК CAPTION (ОДНО СООБЩЕНИЕ)
         voice_file = FSInputFile(filename)
-        await message.reply_voice(voice=voice_file)
-        print(f"✅ Голос отправлен!")
+        await message.reply_voice(
+            voice=voice_file,
+            caption=text_ru  # Русский текст как подпись под голосом
+        )
+        print(f"✅ Голос + текст отправлены в одном сообщении!")
         
     except Exception as e:
         print(f"❌ Ошибка озвучки: {e}")
@@ -435,7 +433,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет"
-    voice_status = "🎤 РУ текст + АЗ голос (TR)"
+    voice_status = "🎤 Голос АЗ + Текст РУ (одно сообщение)"
     
     limits_info = ""
     if MODEL_LIMITS:
