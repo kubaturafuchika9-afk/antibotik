@@ -19,7 +19,7 @@ import edge_tts
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, Command, CallbackQueryFilter
+from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.client.default import DefaultBotProperties
 
@@ -682,13 +682,6 @@ async def command_start_handler(message: Message):
 async def pic_handler(message: Message):
     """
     Генерация картинки через Pollinations (БЕСПЛАТНО)
-    
-    Использование:
-    /pic красивая кошка в стиле масляной живописи
-    /pic киберпанк город ночью неоновый свет
-    /pic космонавт на луне с земной планетой
-    /pic девушка с длинными волосами в лесу 4k
-    /pic красивый закат над морем, пальмы, тропики
     """
     
     command_text = message.text.replace("/pic", "").strip()
@@ -699,9 +692,7 @@ async def pic_handler(message: Message):
             "📝 *Примеры:*\n"
             "  `/pic красивая кошка в стиле масляной живописи`\n"
             "  `/pic киберпанк город ночью неоновый свет`\n"
-            "  `/pic космонавт на луне с земной планетой`\n"
-            "  `/pic девушка с длинными волосами в лесу 4k`\n"
-            "  `/pic красивый закат над морем, пальмы, тропики`\n\n"
+            "  `/pic космонавт на луне с земной планетой`\n\n"
             "⏱️ *Время генерации:* 5-15 секунд\n"
             "💰 *Цена:* Абсолютно бесплатно!"
         )
