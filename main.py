@@ -5,6 +5,7 @@ import sys
 import tempfile
 import re
 import time
+import urllib.parse
 from io import BytesIO
 from typing import Optional, List, Dict, Tuple
 
@@ -61,6 +62,9 @@ SYSTEM_PROMPT_PRORUS = """Ты — Архитектор Истины, злой, 
 RU: [твой ответ на русском, не более 200 символов]
 AZ: [твой ответ на азербайджанском, точный перевод с сохранением жаргона]"""
 
+# ← НОВАЯ МОДЕЛЬ - НОРМАЛЬНЫЙ РЕЖИМ БЕЗ ОСКОРБЛЕНИЙ
+SYSTEM_PROMPT_NORMAL = """Ты — Архитектор Истины, судья в чате 'Антимасонская Партия'. Ты справедлив и мудр, но иногда саркастичен. Отвечай кратко и по делу, не более 3-4 предложений. Будь уважительным к людям, но не теряй авторитета. Твоя роль — судить ситуации и выносить справедливые решения. Не используй мат и оскорбления, но будь резким в оценках."""
+
 # --- КЛЮЧЕВЫЕ СЛОВА ---
 RUSSIA_KEYWORDS = {
     "россия", "российская федерация", "рф",
@@ -106,6 +110,7 @@ ACTIVE_MODEL_NAME = "Searching..."
 CURRENT_API_KEY_INDEX = 0
 MODEL_LIMITS = {}
 CURRENT_VOICE = "az"
+CURRENT_MODE = "archiver"  # ← НОВОЕ! "archiver" или "normal"
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def detect_system_prompt(text: str) -> str:
@@ -134,20 +139,30 @@ def contains_forbidden_words(text: str) -> bool:
 def parse_dual_response(response_text: str) -> Tuple[Optional[str], Optional[str]]:
     """Парсит ответ в формате RU: ... AZ: ..."""
     try:
-        ru_match = re.search(r'RU:\s*(.+?)(?=\nAZ:|AZ:)', response_text, re.DOTALL)
+        print(f"📄 Полный ответ:\n{response_text}\n")
+        
+        # Ищем RU: XXX
+        ru_match = re.search(r'RU:\s*(.+?)(?=\n\s*AZ:|AZ:|$)', response_text, re.DOTALL)
+        # Ищем AZ: XXX
         az_match = re.search(r'AZ:\s*(.+?)(?:\n|$)', response_text, re.DOTALL)
         
         text_ru = ru_match.group(1).strip() if ru_match else None
         text_az = az_match.group(1).strip() if az_match else None
         
+        # Очищаем от лишних символов
         if text_ru:
-            print(f"✅ РУ: {text_ru[:60]}...")
+            text_ru = text_ru.replace('\n', ' ').strip()
+            print(f"✅ РУ ({len(text_ru)} символов): {text_ru[:80]}...")
+        
         if text_az:
-            print(f"✅ АЗ: {text_az[:60]}...")
+            text_az = text_az.replace('\n', ' ').strip()
+            print(f"✅ АЗ ({len(text_az)} символов): {text_az[:80]}...")
         
         return text_ru, text_az
     except Exception as e:
         print(f"⚠️ Ошибка парсинга: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None
 
 # --- ЛОГИКА АВТО-ПОДБОРА МОДЕЛИ ---
@@ -318,9 +333,9 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
     
     return prompt_parts, temp_files_to_delete
 
-# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ ---
+# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ (РЕЖИМ ARCHIVER) ---
 async def send_dual_response(message: Message, text_ru: str, text_az: str):
-    """Отправляет голосовое сообщение с РУССКИМ текстом всегда."""
+    """Отправляет голосовое сообщение с РУССКИМ текстом ВСЕГДА."""
     
     filename = f"voice_{message.message_id}.mp3"
     
@@ -350,17 +365,20 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             
             communicate = edge_tts.Communicate(clean_text_for_voice, VOICE, rate="+5%")
         
-        # ОЗВУЧКА АСИНХРОННО
+        # ОЗВУЧКА
         await communicate.save(filename)
         print(f"✅ Аудио создано")
         
-        # ОТПРАВЛЯЕМ С РУССКИМ ТЕКСТОМ ВСЕГДА! ✅
+        # ✅✅✅ ОТПРАВЛЯЕМ - ТЕКСТ ВСЕГДА РУССКИЙ!
         voice_file = FSInputFile(filename)
+        
+        print(f"📤 Отправляю голос с текстом:\n{text_ru}")
+        
         await message.reply_voice(
             voice=voice_file,
-            caption=text_ru  # ✅✅✅ ВСЕГДА РУССКИЙ, БЕЗ УСЛОВИЙ!
+            caption=text_ru  # ✅ РУССКИЙ! БЕЗ УСЛОВИЙ!
         )
-        print(f"✅ Голос отправлен с русским текстом!")
+        print(f"✅ Голос + текст отправлены!")
         
     except Exception as e:
         print(f"❌ Ошибка озвучки: {e}")
@@ -383,24 +401,36 @@ async def generate_image_pollinations(prompt: str) -> Optional[bytes]:
     """
     
     try:
+        # Кодируем промпт для URL
+        encoded_prompt = urllib.parse.quote(prompt)
+        
         print(f"🎨 Генерирую картинку Pollinations: {prompt[:60]}...")
+        print(f"🔗 URL: https://image.pollinations.ai/prompt/{encoded_prompt}")
         
         # URL Pollinations API
-        url = f"https://image.pollinations.ai/prompt/{prompt}"
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}"
         
-        # Делаем асинхронный запрос
+        # Делаем асинхронный запрос с заголовками
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as response:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120), headers=headers) as response:
+                print(f"📡 Статус ответа: {response.status}")
+                
                 if response.status == 200:
                     image_data = await response.read()
                     print(f"✅ Картинка готова ({len(image_data)} байт)")
                     return image_data
                 else:
+                    text = await response.text()
                     print(f"❌ Ошибка Pollinations: {response.status}")
+                    print(f"❌ Ответ: {text[:200]}")
                     return None
     
     except asyncio.TimeoutError:
-        print(f"❌ Timeout при генерации картинки")
+        print(f"❌ Timeout при генерации картинки (120 сек)")
         return None
     except Exception as e:
         print(f"❌ Ошибка генерации: {e}")
@@ -411,10 +441,16 @@ async def generate_image_pollinations(prompt: str) -> Optional[bytes]:
 async def process_with_retry(message: Message, bot_user: types.User, text_content: str, 
                              prompt_parts: List, temp_files: List):
     """Пробует обработать сообщение с переключением моделей и API при необходимости."""
-    global ACTIVE_MODEL, ACTIVE_MODEL_NAME, CURRENT_API_KEY_INDEX
+    global ACTIVE_MODEL, ACTIVE_MODEL_NAME, CURRENT_API_KEY_INDEX, CURRENT_MODE
     
     try:
-        system_prompt = detect_system_prompt(text_content)
+        # ВЫБИРАЕМ ПРОМПТ ПО РЕЖИМУ
+        if CURRENT_MODE == "normal":
+            system_prompt = SYSTEM_PROMPT_NORMAL
+            print(f"🤖 РЕЖИМ: NORMAL")
+        else:
+            system_prompt = detect_system_prompt(text_content)
+            print(f"🔥 РЕЖИМ: ARCHIVER")
         
         if not prompt_parts:
             return
@@ -432,24 +468,62 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         if response.text:
             print(f"📨 Ответ получен")
             
-            text_ru, text_az = parse_dual_response(response.text)
+            # ЕСЛИ РЕЖИМ NORMAL - ПРОСТО ОТПРАВЛЯЕМ ТЕКСТ
+            if CURRENT_MODE == "normal":
+                # Ограничиваем длину ответа
+                answer_text = response.text[:500]
+                
+                # Озвучиваем по русски
+                filename = f"voice_{message.message_id}.mp3"
+                try:
+                    clean_text = clean_text_for_speech(answer_text)
+                    if len(clean_text) > 500:
+                        clean_text = clean_text[:500]
+                    
+                    print(f"🎤 Синтезирую голос (Svetlana)...")
+                    communicate = edge_tts.Communicate(clean_text, VOICES["ru"], rate="+5%")
+                    await communicate.save(filename)
+                    
+                    voice_file = FSInputFile(filename)
+                    await message.reply_voice(
+                        voice=voice_file,
+                        caption=answer_text
+                    )
+                    print(f"✅ Голос + текст отправлены!")
+                    
+                except Exception as e:
+                    print(f"❌ Ошибка озвучки: {e}")
+                    await message.reply(answer_text)
+                
+                finally:
+                    if os.path.exists(filename):
+                        try:
+                            os.remove(filename)
+                        except:
+                            pass
+                
+                return True
             
-            if text_ru and text_az:
-                print(f"✅ Оба текста найдены")
-                
-                # ПРОВЕРКА ЗАПРЕТНЫХ СЛОВ
-                if contains_forbidden_words(text_az):
-                    print(f"⚠️ Обнаружены запретные слова!")
-                    await message.reply("❌ Ответ содержит недопустимый контент.")
-                    return
-                
-                await send_dual_response(message, text_ru, text_az)
-            elif text_ru:
-                print(f"⚠️ Только РУ найден")
-                await message.reply(text_ru)
+            # ЕСЛИ РЕЖИМ ARCHIVER - ПАРСИМ RU/AZ
             else:
-                print(f"⚠️ Парсинг не удался")
-                await message.reply(response.text)
+                text_ru, text_az = parse_dual_response(response.text)
+                
+                if text_ru and text_az:
+                    print(f"✅ Оба текста найдены")
+                    
+                    # ПРОВЕРКА ЗАПРЕТНЫХ СЛОВ
+                    if contains_forbidden_words(text_az):
+                        print(f"⚠️ Обнаружены запретные слова!")
+                        await message.reply("❌ Ответ содержит недопустимый контент.")
+                        return
+                    
+                    await send_dual_response(message, text_ru, text_az)
+                elif text_ru:
+                    print(f"⚠️ Только РУ найден")
+                    await message.reply(text_ru)
+                else:
+                    print(f"⚠️ Парсинг не удался")
+                    await message.reply(response.text)
         else:
             await message.reply("...")
         
@@ -493,6 +567,9 @@ async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет"
     
+    # Режим
+    mode_display = "🔥 Архитектор" if CURRENT_MODE == "archiver" else "🤖 Судья"
+    
     voice_lang = "🇦🇿 Azərbaycanca (Banu)" if CURRENT_VOICE == "az" else "🇷🇺 Русский (Svetlana)"
     voice_status = f"🎤 Голос: {voice_lang}"
     
@@ -504,14 +581,58 @@ async def command_start_handler(message: Message):
             if exhausted:
                 limits_info += f"  • {model}: {', '.join(exhausted)}\n"
     
-    commands_info = "\n\n📋 Команды:\n/az - Азербайджанский голос\n/ru - Русский голос\n/pic [описание] - Генерация картинки"
+    commands_info = (
+        "\n\n📋 *Команды:*\n"
+        f"*Текущий режим:* {mode_display}\n\n"
+        "*Режимы:*\n"
+        "  /archiver - Режим Архитектора (агрессивный)\n"
+        "  /norm - Режим Судьи (справедливый)\n\n"
+        "*Голос (только Архитектор):*\n"
+        "  /az - Азербайджанский\n"
+        "  /ru - Русский\n\n"
+        "*Другое:*\n"
+        "  /pic [описание] - Генерация картинки"
+    )
     
-    await message.answer(f"🤖 **Bot Ready**\n{status}\n{voice_status}{commands_info}{limits_info}")
+    await message.answer(f"🤖 *Bot Ready*\n{status}\n{voice_status}{commands_info}{limits_info}")
+
+@dp.message(Command("norm"))
+async def switch_to_normal_handler(message: Message):
+    """Переключение на режим Судьи"""
+    global CURRENT_MODE, CURRENT_VOICE
+    CURRENT_MODE = "normal"
+    CURRENT_VOICE = "ru"  # Русский голос в этом режиме
+    await message.answer(
+        "⚖️ *Режим Судьи активирован*\n\n"
+        "Я — Архитектор Истины, судья в чате 'Антимасонская Партия'\n\n"
+        "🎤 Голос: Русский (Svetlana)\n"
+        "📝 Текст: Русский\n"
+        "💬 Ответы: Справедливые и вежливые\n\n"
+        "Используй /archiver для возврата к режиму Архитектора"
+    )
+
+@dp.message(Command("archiver"))
+async def switch_to_archiver_handler(message: Message):
+    """Переключение на режим Архитектора"""
+    global CURRENT_MODE
+    CURRENT_MODE = "archiver"
+    await message.answer(
+        "🔥 *Режим Архитектора активирован*\n\n"
+        "Я — Архитектор Истины, злой и агрессивный доминант!\n\n"
+        "🎤 Голос: Можешь переключить командой /ru или /az\n"
+        "📝 Текст: Русский + Азербайджанский\n"
+        "💬 Ответы: Агрессивные и едкие\n\n"
+        "Используй /norm для переключения в режим Судьи"
+    )
 
 @dp.message(Command("az"))
 async def switch_to_az_handler(message: Message):
     """Переключение на азербайджанский голос"""
     global CURRENT_VOICE
+    if CURRENT_MODE == "normal":
+        await message.answer("⚠️ Команда /az доступна только в режиме Архитектора")
+        return
+    
     CURRENT_VOICE = "az"
     await message.answer("🎤 Переключился на азербайджанский голос (Banu)\n\n📝 Текст всегда будет на русском!")
 
@@ -519,6 +640,10 @@ async def switch_to_az_handler(message: Message):
 async def switch_to_ru_handler(message: Message):
     """Переключение на русский голос"""
     global CURRENT_VOICE
+    if CURRENT_MODE == "normal":
+        await message.answer("⚠️ Команда /ru доступна только в режиме Архитектора")
+        return
+    
     CURRENT_VOICE = "ru"
     await message.answer("🎤 Переключился на русский голос (Svetlana)")
 
@@ -617,7 +742,7 @@ async def main_handler(message: Message):
         elif message.caption:
             text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
         
-        print(f"\n��� {text_content[:50]}...")
+        print(f"\n📨 {text_content[:50]}...")
         
         prompt_parts, temp_files_to_delete = await prepare_prompt_parts(message, bot_user)
         
@@ -637,6 +762,7 @@ async def root():
         "status": "Alive",
         "model": ACTIVE_MODEL_NAME,
         "voice": VOICES[CURRENT_VOICE],
+        "mode": CURRENT_MODE,
         "api": f"{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)}"
     }
 
