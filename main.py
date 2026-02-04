@@ -4,6 +4,7 @@ import logging
 import sys
 import tempfile
 import re
+import time
 from io import BytesIO
 from typing import Optional, List, Dict, Tuple
 
@@ -11,6 +12,7 @@ import uvicorn
 from fastapi import FastAPI
 import aiohttp
 from PIL import Image
+import requests
 
 import edge_tts
 
@@ -318,45 +320,47 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
 
 # --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ И ОТПРАВКИ ---
 async def send_dual_response(message: Message, text_ru: str, text_az: str):
-    """Отправляет голосовое сообщение с текстом."""
+    """Отправляет голосовое сообщение с РУССКИМ текстом всегда."""
     
     filename = f"voice_{message.message_id}.mp3"
     
     try:
+        # ВЫБИРАЕМ ЯЗЫК ОЗВУЧКИ
         if CURRENT_VOICE == "ru":
             VOICE = VOICES["ru"]
-            clean_text = clean_text_for_speech(text_ru)
+            clean_text_for_voice = clean_text_for_speech(text_ru)
             
-            if len(clean_text) > 500:
-                clean_text = clean_text[:500]
+            if len(clean_text_for_voice) > 500:
+                clean_text_for_voice = clean_text_for_voice[:500]
             
             print(f"🎤 Синтезирую голос (Svetlana - ru-RU)...")
-            print(f"   Озвучиваю: {clean_text[:60]}...")
+            print(f"   Озвучиваю: {clean_text_for_voice[:60]}...")
             
-            communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
-            caption = text_ru
-        else:
-            VOICE = VOICES["az"]
-            print(f"🎤 Синтезирую голос (Banu - az-AZ)...")
-            
-            clean_text = clean_text_for_speech(text_az)
-            if len(clean_text) > 500:
-                clean_text = clean_text[:500]
-            
-            print(f"   Озвучиваю: {clean_text[:60]}...")
-            
-            communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
-            caption = text_az
+            communicate = edge_tts.Communicate(clean_text_for_voice, VOICE, rate="+5%")
         
+        else:  # AZ
+            VOICE = VOICES["az"]
+            clean_text_for_voice = clean_text_for_speech(text_az)
+            
+            if len(clean_text_for_voice) > 500:
+                clean_text_for_voice = clean_text_for_voice[:500]
+            
+            print(f"🎤 Синтезирую голос (Banu - az-AZ)...")
+            print(f"   Озвучиваю: {clean_text_for_voice[:60]}...")
+            
+            communicate = edge_tts.Communicate(clean_text_for_voice, VOICE, rate="+5%")
+        
+        # ОЗВУЧКА АСИНХРОННО
         await communicate.save(filename)
         print(f"✅ Аудио создано")
         
+        # ОТПРАВЛЯЕМ С РУССКИМ ТЕКСТОМ ВСЕГДА! ✅
         voice_file = FSInputFile(filename)
         await message.reply_voice(
             voice=voice_file,
-            caption=caption
+            caption=text_ru  # ✅✅✅ ВСЕГДА РУССКИЙ, БЕЗ УСЛОВИЙ!
         )
-        print(f"✅ Голос отправлен!")
+        print(f"✅ Голос отправлен с русским текстом!")
         
     except Exception as e:
         print(f"❌ Ошибка озвучки: {e}")
@@ -370,44 +374,36 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             except:
                 pass
 
-# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (REPLICATE FLUX) ---
-async def generate_image_flux(prompt: str) -> Optional[str]:
+# --- 🖼️ ФУНКЦИЯ ГЕНЕРАЦИИ КАРТИНОК (POLLINATIONS) ---
+async def generate_image_pollinations(prompt: str) -> Optional[bytes]:
     """
-    Генерирует картинку через Replicate Flux API
-    Возвращает URL картинки или None
+    Генерирует картинку через Pollinations (ПОЛНОСТЬЮ БЕСПЛАТНО!)
+    Без регистрации, без карты, без ограничений!
+    Возвращает бинарные данные картинки или None
     """
-    
-    if not REPLICATE_API_TOKEN:
-        print("⚠️ REPLICATE_API_TOKEN не установлен")
-        return None
     
     try:
-        print(f"🎨 Генерирую картинку Flux: {prompt[:60]}...")
+        print(f"🎨 Генерирую картинку Pollinations: {prompt[:60]}...")
         
-        import replicate
+        # URL Pollinations API
+        url = f"https://image.pollinations.ai/prompt/{prompt}"
         
-        # Используем Flux Schnell (быстро и хорошо качество)
-        output = await asyncio.to_thread(
-            replicate.run,
-            "black-forest-labs/flux-schnell",
-            api_token=REPLICATE_API_TOKEN,
-            input={
-                "prompt": f"{prompt}, 4k, high quality, detailed, professional photo",
-                "aspect_ratio": "1:1",
-                "num_outputs": 1,
-            }
-        )
-        
-        if output and len(output) > 0:
-            image_url = output[0]
-            print(f"✅ Картинка готова: {image_url}")
-            return image_url
-        else:
-            print("❌ Пустой ответ от Flux")
-            return None
-            
+        # Делаем асинхронный запрос
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as response:
+                if response.status == 200:
+                    image_data = await response.read()
+                    print(f"✅ Картинка готова ({len(image_data)} байт)")
+                    return image_data
+                else:
+                    print(f"❌ Ошибка Pollinations: {response.status}")
+                    return None
+    
+    except asyncio.TimeoutError:
+        print(f"❌ Timeout при генерации картинки")
+        return None
     except Exception as e:
-        print(f"❌ Ошибка Flux: {e}")
+        print(f"❌ Ошибка генерации: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -508,7 +504,7 @@ async def command_start_handler(message: Message):
             if exhausted:
                 limits_info += f"  • {model}: {', '.join(exhausted)}\n"
     
-    commands_info = "\n\n📋 Команды:\n/az - Азербайджанский голос\n/ru - Русский голос\n/pic [описание] - Генерация картинки Flux"
+    commands_info = "\n\n📋 Команды:\n/az - Азербайджанский голос\n/ru - Русский голос\n/pic [описание] - Генерация картинки"
     
     await message.answer(f"🤖 **Bot Ready**\n{status}\n{voice_status}{commands_info}{limits_info}")
 
@@ -517,7 +513,7 @@ async def switch_to_az_handler(message: Message):
     """Переключение на азербайджанский голос"""
     global CURRENT_VOICE
     CURRENT_VOICE = "az"
-    await message.answer("🎤 Переключился на азербайджанский голос (Banu)")
+    await message.answer("🎤 Переключился на азербайджанский голос (Banu)\n\n📝 Текст всегда будет на русском!")
 
 @dp.message(Command("ru"))
 async def switch_to_ru_handler(message: Message):
@@ -528,33 +524,64 @@ async def switch_to_ru_handler(message: Message):
 
 @dp.message(Command("pic"))
 async def pic_handler(message: Message):
-    """Генерация картинки через Flux"""
+    """
+    Генерация картинки через Pollinations (БЕСПЛАТНО)
+    
+    Использование:
+    /pic красивая кошка в стиле масляной живописи
+    /pic киберпанк город ночью неоновый свет
+    /pic космонавт на луне с земной планетой
+    /pic девушка с длинными волосами в лесу 4k
+    /pic красивый закат над морем, пальмы, тропики
+    """
     
     command_text = message.text.replace("/pic", "").strip()
     
     if not command_text:
-        await message.answer("⚠️ Использование: /pic [описание картинки]\n\nПример: /pic красивая картинка кота матроскина в стиле масла")
+        await message.answer(
+            "⚠️ *Использование:* `/pic [описание картинки]`\n\n"
+            "📝 *Примеры:*\n"
+            "  `/pic красивая кошка в стиле масляной живописи`\n"
+            "  `/pic киберпанк город ночью неоновый свет`\n"
+            "  `/pic космонавт на луне с земной планетой`\n"
+            "  `/pic девушка с длинными волосами в лесу 4k`\n"
+            "  `/pic красивый закат над морем, пальмы, тропики`\n\n"
+            "⏱️ *Время генерации:* 5-15 секунд\n"
+            "💰 *Цена:* Абсолютно бесплатно!"
+        )
         return
     
-    status_msg = await message.answer("🎨 Генерирую картинку Flux...\n⏳ Это может занять 10-30 секунд")
+    # Ограничиваем длину промпта
+    if len(command_text) > 300:
+        command_text = command_text[:300]
     
-    image_url = await generate_image_flux(command_text)
+    status_msg = await message.answer("🎨 Генерирую картинку...\n⏳ Подожди 5-15 секунд")
     
-    if image_url:
+    image_data = await generate_image_pollinations(command_text)
+    
+    if image_data:
         try:
+            # Отправляем как бинарные данные
             await message.answer_photo(
-                photo=image_url,
-                caption=f"✅ Flux сгенерировал!\n\nPrompt: {command_text[:100]}"
+                photo=BytesIO(image_data),
+                caption=f"✨ Картинка готова!\n\n📝 *Prompt:* `{command_text[:100]}`"
             )
             try:
                 await status_msg.delete()
             except:
                 pass
         except Exception as e:
-            print(f"❌ Ошибка отправки картинки: {e}")
-            await message.answer(f"❌ Ошибка при отправке картинки")
+            print(f"❌ Ошибка отправки: {e}")
+            await message.answer(f"❌ Ошибка отправки картинки: {e}")
     else:
-        await message.answer("❌ Ошибка генерации картинки. Возможно, кончились кредиты на Replicate.")
+        await message.answer(
+            "❌ Ошибка генерации картинки\n\n"
+            "Возможные причины:\n"
+            "  • Слишком сложный промпт\n"
+            "  • Проблема с сетью\n"
+            "  • Сервис временно недоступен\n\n"
+            "Попробуй еще раз с более простым описанием."
+        )
     
     try:
         await status_msg.delete()
@@ -590,7 +617,7 @@ async def main_handler(message: Message):
         elif message.caption:
             text_content = message.caption.replace(f"@{bot_user.username}", "").strip()
         
-        print(f"\n📨 {text_content[:50]}...")
+        print(f"\n��� {text_content[:50]}...")
         
         prompt_parts, temp_files_to_delete = await prepare_prompt_parts(message, bot_user)
         
