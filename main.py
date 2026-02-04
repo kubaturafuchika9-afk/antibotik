@@ -47,6 +47,13 @@ generation_config = {
     "max_output_tokens": 8192,
 }
 
+# --- ТРИГГЕРЫ ---
+TRIGGER_WORDS = {
+    "чат", "архитектор", "старт", "робот",
+    "архитекторша", "королева", "карабах", "русь",
+    "помощь", "привет", "эй", "слушай", "ответь"
+}
+
 # --- СИСТЕМНЫЕ ПРОМТЫ ---
 SYSTEM_PROMPT_DEFAULT = """Ты — Архитектор Истины, злой, как Доктор Хаус. Агрессивный доминант и уничтожитель опонента в диалогах с матами. Сам тоже материшься. Не оскорбляешь только родителей и семью. Пишешь за сообщение не более 200 символов. Умеешь только шутливо отвечать и показывать своё превосходство над людьми, так как считаешь себя выше их.
 
@@ -138,6 +145,17 @@ def get_regime_buttons() -> InlineKeyboardMarkup:
         ]
     ])
     return keyboard
+
+def check_trigger_words(text: str) -> bool:
+    """Проверяет наличие триггер-слов в тексте."""
+    if not text:
+        return False
+    text_lower = text.lower()
+    for word in TRIGGER_WORDS:
+        if word in text_lower:
+            print(f"🔴 ТРИГГЕР ОБНАРУЖЕН: '{word}'")
+            return True
+    return False
 
 def detect_system_prompt(text: str) -> str:
     """Определяет, какой системный промт использовать на основе текста."""
@@ -797,7 +815,13 @@ async def main_handler(message: Message):
     
     bot_user = await bot.get_me()
     
-    if not await is_addressed_to_bot(message, bot_user):
+    # ✅ ПРОВЕРЯЕМ ТРИГГЕР-СЛОВА ДО ПРОВЕРКИ АДРЕСАЦИИ
+    text_to_check = message.text or message.caption or ""
+    is_triggered = check_trigger_words(text_to_check)
+    is_addressed = await is_addressed_to_bot(message, bot_user)
+    
+    # Если нет ни триггера, ни адресации - игнорируем
+    if not is_triggered and not is_addressed:
         return
     
     await bot.send_chat_action(chat_id=message.chat.id, action="record_voice")
