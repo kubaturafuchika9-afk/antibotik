@@ -307,16 +307,16 @@ async def prepare_prompt_parts(message: Message, bot_user: types.User) -> Tuple[
 async def send_dual_response(message: Message, text_ru: str, text_az: str):
     """
     Отправляет ОДНО сообщение:
-    - Голосовое на АЗЕРБАЙДЖАНСКОМ (озвучка на ТУРЕЦКОМ)
+    - Голосовое на АЗЕРБАЙДЖАНСКОМ (голос Babek)
     - Caption с текстом на РУССКОМ
     """
     
-    # Турецкий голос (он может нормально читать азербайджанский текст)
-    VOICE = "tr-TR-AhmetNeural"
+    # Азербайджанский голос Babek - идеально подходит!
+    VOICE = "az-AZ-BabekNeural"
     filename = f"voice_{message.message_id}.mp3"
     
     try:
-        # ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ТУРЕЦКИМ ГОЛОСОМ
+        # ОЗВУЧИВАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ГОЛОСОМ BABEK
         clean_text_az = clean_text_for_speech(text_az)
         
         if not clean_text_az:
@@ -326,10 +326,10 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
         if len(clean_text_az) > 500:
             clean_text_az = clean_text_az[:500]
         
-        print(f"🎤 Синтезирую голос (Турецкий Ахмет)...")
+        print(f"🎤 Синтезирую голос (Babek - az-AZ)...")
         print(f"   Озвучиваю АЗ текст: {clean_text_az[:60]}...")
         
-        # ПЕРЕДАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ТУРЕЦКОМУ ГОЛОСУ
+        # ПЕРЕДАЕМ АЗЕРБАЙДЖАНСКИЙ ТЕКСТ ГОЛОСУ BABEK
         communicate = edge_tts.Communicate(clean_text_az, VOICE, rate="+5%")
         await communicate.save(filename)
         
@@ -341,7 +341,7 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             voice=voice_file,
             caption=text_ru  # Русский текст как подпись под голосом
         )
-        print(f"✅ Голос + текст отправлены в одном сообщении!")
+        print(f"✅ Голос Babek + текст отправлены в одном сообщении!")
         
     except Exception as e:
         print(f"❌ Ошибка озвучки: {e}")
@@ -433,7 +433,7 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
 async def command_start_handler(message: Message):
     api_info = f" (API #{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)})" if len(GOOGLE_KEYS) > 1 else ""
     status = f"✅ `{ACTIVE_MODEL_NAME}`{api_info}" if ACTIVE_MODEL else "💀 Нет"
-    voice_status = "🎤 Голос АЗ + Текст РУ (одно сообщение)"
+    voice_status = "🎤 Голос: Babek (az-AZ) + Текст РУ (одно сообщение)"
     
     limits_info = ""
     if MODEL_LIMITS:
@@ -493,6 +493,7 @@ async def root():
     return {
         "status": "Alive",
         "model": ACTIVE_MODEL_NAME,
+        "voice": "Babek (az-AZ)",
         "api": f"{CURRENT_API_KEY_INDEX + 1}/{len(GOOGLE_KEYS)}"
     }
 
