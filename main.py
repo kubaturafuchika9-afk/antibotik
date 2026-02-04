@@ -416,6 +416,52 @@ async def send_dual_response(message: Message, text_ru: str, text_az: str):
             except:
                 pass
 
+# --- 🎙️ ФУНКЦИЯ ОЗВУЧКИ ДЛЯ ПОМОЩНИКА (NORMAL MODE) ---
+async def send_normal_response(message: Message, text: str):
+    """Отправляет ответ помощника голосом (русский Svetlana)."""
+    
+    filename = f"voice_{message.message_id}.mp3"
+    
+    try:
+        # ТОЧНО КАК В send_dual_response, но для NORMAL режима
+        VOICE = VOICES["ru"]  # ru-RU-SvetlanaNeural
+        clean_text_for_voice = clean_text_for_speech(text)
+        
+        # Обрезаем на 500 символов (как в /ru)
+        if len(clean_text_for_voice) > 500:
+            clean_text_for_voice = clean_text_for_voice[:500]
+        
+        print(f"🎤 Синтезирую голос помощника (Svetlana - ru-RU)...")
+        print(f"   Озвучиваю: {clean_text_for_voice[:60]}...")
+        
+        # ТОЧНО ТАКАЯ ЖЕ ОЗВУЧКА КАК В /ru
+        communicate = edge_tts.Communicate(clean_text_for_voice, VOICE, rate="+5%")
+        await communicate.save(filename)
+        print(f"✅ Аудио создано")
+        
+        voice_file = FSInputFile(filename)
+        
+        print(f"📤 Отправляю голос с текстом:\n{text}")
+        
+        # ОТПРАВЛЯЕМ ТОЧНО КАК В send_dual_response
+        await message.reply_voice(
+            voice=voice_file,
+            caption=text
+        )
+        print(f"✅ Голос + текст отправлены!")
+        
+    except Exception as e:
+        print(f"❌ Ошибка озвучки: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    finally:
+        if os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except:
+                pass
+
 async def process_with_retry(message: Message, bot_user: types.User, text_content: str, 
                              prompt_parts: List, temp_files: List):
     """Пробует обработать сообщение с переключением моделей и API при необходимости."""
@@ -449,11 +495,11 @@ async def process_with_retry(message: Message, bot_user: types.User, text_conten
         if response.text:
             print(f"📨 Ответ получен")
             
-            # ЕСЛИ РЕЖИМ NORMAL - ПРОСТО ОТПРАВЛЯЕМ ТЕКСТ БЕЗ ОЗВУЧКИ
+            # ЕСЛИ РЕЖИМ NORMAL - ОТПРАВЛЯЕМ С ОЗВУЧКОЙ (БЕЗ ТОКСИКА)
             if CURRENT_MODE == "normal":
                 # Ограничиваем длину ответа
                 answer_text = response.text[:1000]
-                await message.reply(answer_text)
+                await send_normal_response(message, answer_text)
                 print(f"✅ Помощник ответил!")
                 return True
             
