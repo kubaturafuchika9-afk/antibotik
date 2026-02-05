@@ -99,8 +99,8 @@ SYSTEM_PROMPT_REPORT = """Ты — Архитектор Истины и анал
 - Язвительный, острый анализ (как Доктор Хаус)
 - Выявляй противоречия, слабости, смешные моменты
 - Показывай презрение к глупости, но с юмором
-- Максимум 300 символов
-- Материшься если уместно
+- Максимум 500 символов
+- Мат присутствует в твоей речи над их мыслями
 
 ВАЖНО! Ответ давай ВСЕГДА в этом ТОЧНОМ формате:
 RU: [анализ на русском]
@@ -116,6 +116,8 @@ MONITORED_USERS = {
 MSK_TZ = ZoneInfo("Europe/Moscow")
 MESSAGES_DIR = "collected_messages"
 os.makedirs(MESSAGES_DIR, exist_ok=True)
+
+REPORT_GROUP_ID = -1002028876209  # Группа для отчетов
 
 # --- КЛЮЧЕВЫЕ СЛОВА ---
 RUSSIA_KEYWORDS = {
@@ -587,7 +589,7 @@ async def generate_user_report(user_name: str) -> Tuple[Optional[str], Optional[
     return None, None
 
 async def send_report_voice(user_name: str, user_id: int, text_ru: str, text_az: str):
-    """Отправляет голосовой отчет пользователю (скрыто, в ЛС)."""
+    """Отправляет голосовой отчет в группу."""
     
     filename = f"report_{user_name}_{int(time.time())}.mp3"
     
@@ -608,15 +610,16 @@ async def send_report_voice(user_name: str, user_id: int, text_ru: str, text_az:
         voice_file = FSInputFile(filename)
         
         try:
+            # ОТПРАВЛЯЕМ В ГРУППУ, А НЕ В ЛС
             await bot.send_voice(
-                chat_id=user_id,
+                chat_id=REPORT_GROUP_ID,  # ← ГРУППА ВМЕСТО user_id
                 voice=voice_file,
-                caption=f"📊 *Ежедневный отчет о {user_name}*\n\n{text_ru}"
+                caption=f"📊 *Отчет о {user_name}* (@{MONITORED_USERS[user_name]['username']})\n\n{text_ru}"
             )
-            print(f"📤 Отчет отправлен {user_name}")
+            print(f"📤 Отчет отправлен в группу для {user_name}")
         except Exception as e:
-            print(f"⚠️ Не удалось отправить отчет в ЛС {user_name}: {e}")
-            logging.error(f"Failed to send report to {user_id}: {e}")
+            print(f"⚠️ Не удалось отправить отчет в группу: {e}")
+            logging.error(f"Failed to send report to group: {e}")
     
     except Exception as e:
         print(f"❌ Ошибка озвучки отчета: {e}")
@@ -629,36 +632,57 @@ async def send_report_voice(user_name: str, user_id: int, text_ru: str, text_az:
                 pass
 
 async def send_daily_reports():
-    """Отправляет отчеты в 21:00 МСК."""
+    """Отправляет отчеты в 21:00 МСК в группу."""
     
     while True:
         now = datetime.now(MSK_TZ)
         
         if now.hour == 21 and now.minute == 0:
-            print(f"\n⏰ ВРЕМЯ ОТЧЕТОВ! {now.strftime('%H:%M:%S МСК')}\n")
+            print(f"\n{'='*60}")
+            print(f"⏰ ВРЕМЯ ОТЧЕТОВ! {now.strftime('%H:%M:%S МСК')}")
+            print(f"{'='*60}\n")
+            
+            report_count = 0
             
             for user_name, user_data in MONITORED_USERS.items():
                 user_id = user_data["id"]
+                username = user_data["username"]
+                
+                print(f"\n🔍 Обработка {user_name}...")
+                
+                messages = get_collected_messages(user_name)
+                print(f"   📝 Собрано сообщений: {len(messages)}")
+                
+                if messages:
+                    for i, msg in enumerate(messages[:5]):  # Показываем первые 5
+                        print(f"      - {msg[:60]}...")
                 
                 text_ru, text_az = await generate_user_report(user_name)
                 
                 if text_ru and text_az:
-                    print(f"\n✅ Отчет готов для {user_name}")
-                    print(f"RU: {text_ru}")
-                    print(f"AZ: {text_az}")
+                    print(f"\n   ✅ Отчет готов!")
+                    print(f"   RU: {text_ru}")
+                    print(f"   AZ: {text_az}")
                     
                     if not contains_forbidden_words(text_az):
                         try:
                             await send_report_voice(user_name, user_id, text_ru, text_az)
+                            report_count += 1
                         except Exception as e:
-                            print(f"❌ Ошибка отправки отчета {user_name}: {e}")
+                            print(f"   ❌ Ошибка отправки: {e}")
                     else:
-                        print(f"⚠️ Отчет содержит запретные слова для {user_name}")
+                        print(f"   ⚠️ Запретные слова обнаружены!")
                     
                     clear_daily_messages(user_name)
                 else:
-                    print(f"⚠️ Не удалось сгенерировать отчет для {user_name}")
+                    print(f"   ⚠️ Не удалось сгенерировать отчет")
+                    if not messages:
+                        print(f"      (нет сообщений за день)")
                     clear_daily_messages(user_name)
+            
+            print(f"\n{'='*60}")
+            print(f"✅ ОТЧЕТЫ ОТПРАВЛЕНЫ: {report_count}/2")
+            print(f"{'='*60}\n")
             
             await asyncio.sleep(60)
         
