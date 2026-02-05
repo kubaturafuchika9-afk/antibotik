@@ -8,6 +8,9 @@ import time
 import urllib.parse
 from io import BytesIO
 from typing import Optional, List, Dict, Tuple
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import json
 
 import uvicorn
 from fastapi import FastAPI
@@ -88,6 +91,31 @@ SYSTEM_PROMPT_NORMAL = """Ты — умный, внимательный и др�
 - Отвечай кратко, но полно (2-4 предложения обычно достаточно)
 
 Помни: твоя цель — помочь и быть полезным."""
+
+# --- СИСТЕМА МОНИТОРИНГА ПОЛЬЗОВАТЕЛЕЙ ---
+SYSTEM_PROMPT_REPORT = """Ты — Архитектор Истины и аналитик человеческой сущности. Твоя задача — составить острый, едкий мини-анализ личности человека на основе его сообщений за день.
+
+СТИЛЬ:
+- Язвительный, острый анализ (как Доктор Хаус)
+- Выявляй противоречия, слабости, смешные моменты
+- Показывай презрение к глупости, но с юмором
+- Максимум 300 символов
+- Материшься если уместно
+
+ВАЖНО! Ответ давай ВСЕГДА в этом ТОЧНОМ формате:
+RU: [анализ на русском]
+AZ: [точный перевод на азербайджанском с сохранением жаргона]
+
+ЗАПРЕТНЫЕ СЛОВА: peysar, peysər, пейсар - игнорируй их полностью."""
+
+MONITORED_USERS = {
+    "Гасан": {"username": "GasanPashaev", "id": 813122828},
+    "Ульви": {"username": "hugolive23", "id": 5687309962},
+}
+
+MSK_TZ = ZoneInfo("Europe/Moscow")
+MESSAGES_DIR = "collected_messages"
+os.makedirs(MESSAGES_DIR, exist_ok=True)
 
 # --- КЛЮЧЕВЫЕ СЛОВА ---
 RUSSIA_KEYWORDS = {
@@ -459,6 +487,183 @@ async def send_normal_response(message: Message, text: str):
             except:
                 pass
 
+# --- ФУНКЦИИ МОНИТОРИНГА ---
+def save_user_message(user_name: str, user_id: int, username: str, message_text: str):
+    """Сохраняет сообщение пользователя в JSON файл."""
+    
+    filename = os.path.join(MESSAGES_DIR, f"{user_name}_messages.json")
+    
+    message_data = {
+        "timestamp": datetime.now(MSK_TZ).isoformat(),
+        "username": username,
+        "text": message_text
+    }
+    
+    messages = []
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                messages = json.load(f)
+        except:
+            messages = []
+    
+    messages.append(message_data)
+    
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(messages, f, ensure_ascii=False, indent=2)
+    
+    print(f"💾 Сообщение сохранено от {user_name} (@{username})")
+
+def get_collected_messages(user_name: str) -> List[str]:
+    """Возвращает все собранные сообщения пользователя за день."""
+    
+    filename = os.path.join(MESSAGES_DIR, f"{user_name}_messages.json")
+    
+    if not os.path.exists(filename):
+        return []
+    
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            messages = json.load(f)
+            return [msg["text"] for msg in messages]
+    except:
+        return []
+
+def clear_daily_messages(user_name: str):
+    """Очищает собранные сообщения после отправки отчета."""
+    
+    filename = os.path.join(MESSAGES_DIR, f"{user_name}_messages.json")
+    
+    if os.path.exists(filename):
+        try:
+            os.remove(filename)
+            print(f"🗑️ Очищены сообщения для {user_name}")
+        except:
+            pass
+
+async def generate_user_report(user_name: str) -> Tuple[Optional[str], Optional[str]]:
+    """Генерирует анализ сообщений пользователя через /az модель."""
+    
+    global ACTIVE_MODEL_NAME
+    
+    messages = get_collected_messages(user_name)
+    
+    if not messages:
+        print(f"⚠️ Нет сообщений для {user_name}")
+        return None, None
+    
+    context = "\n".join(messages)
+    
+    if len(context) > 2000:
+        context = context[:2000]
+    
+    analysis_prompt = f"""Вот сообщения от {user_name} (@{MONITORED_USERS[user_name]['username']}) за день:
+
+---
+{context}
+---
+
+Дай острый анализ этого человека. Что о нем говорит его речь? Какой он на самом деле?"""
+    
+    try:
+        print(f"📊 Генерирую отчет для {user_name}...")
+        
+        current_model = genai.GenerativeModel(
+            model_name=ACTIVE_MODEL_NAME,
+            generation_config=generation_config,
+            system_instruction=SYSTEM_PROMPT_REPORT
+        )
+        
+        response = await current_model.generate_content_async(analysis_prompt)
+        
+        if response.text:
+            return parse_dual_response(response.text)
+    
+    except Exception as e:
+        print(f"❌ Ошибка генерации отчета: {e}")
+        if await switch_api_key(silent=True):
+            return await generate_user_report(user_name)
+    
+    return None, None
+
+async def send_report_voice(user_name: str, user_id: int, text_ru: str, text_az: str):
+    """Отправляет голосовой отчет пользователю (скрыто, в ЛС)."""
+    
+    filename = f"report_{user_name}_{int(time.time())}.mp3"
+    
+    try:
+        VOICE = VOICES["az"]  # /az модель - азербайджанский голос
+        clean_text = clean_text_for_speech(text_az)
+        
+        if len(clean_text) > 500:
+            clean_text = clean_text[:500]
+        
+        print(f"🎤 Синтезирую отчет для {user_name} (az-AZ)...")
+        
+        communicate = edge_tts.Communicate(clean_text, VOICE, rate="+5%")
+        await communicate.save(filename)
+        
+        print(f"✅ Аудио отчета создано для {user_name}")
+        
+        voice_file = FSInputFile(filename)
+        
+        try:
+            await bot.send_voice(
+                chat_id=user_id,
+                voice=voice_file,
+                caption=f"📊 *Ежедневный отчет о {user_name}*\n\n{text_ru}"
+            )
+            print(f"📤 Отчет отправлен {user_name}")
+        except Exception as e:
+            print(f"⚠️ Не удалось отправить отчет в ЛС {user_name}: {e}")
+            logging.error(f"Failed to send report to {user_id}: {e}")
+    
+    except Exception as e:
+        print(f"❌ Ошибка озвучки отчета: {e}")
+    
+    finally:
+        if os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except:
+                pass
+
+async def send_daily_reports():
+    """Отправляет отчеты в 21:00 МСК."""
+    
+    while True:
+        now = datetime.now(MSK_TZ)
+        
+        if now.hour == 21 and now.minute == 0:
+            print(f"\n⏰ ВРЕМЯ ОТЧЕТОВ! {now.strftime('%H:%M:%S МСК')}\n")
+            
+            for user_name, user_data in MONITORED_USERS.items():
+                user_id = user_data["id"]
+                
+                text_ru, text_az = await generate_user_report(user_name)
+                
+                if text_ru and text_az:
+                    print(f"\n✅ Отчет готов для {user_name}")
+                    print(f"RU: {text_ru}")
+                    print(f"AZ: {text_az}")
+                    
+                    if not contains_forbidden_words(text_az):
+                        try:
+                            await send_report_voice(user_name, user_id, text_ru, text_az)
+                        except Exception as e:
+                            print(f"❌ Ошибка отправки отчета {user_name}: {e}")
+                    else:
+                        print(f"⚠️ Отчет содержит запретные слова для {user_name}")
+                    
+                    clear_daily_messages(user_name)
+                else:
+                    print(f"⚠️ Не удалось сгенерировать отчет для {user_name}")
+                    clear_daily_messages(user_name)
+            
+            await asyncio.sleep(60)
+        
+        await asyncio.sleep(30)
+
 async def process_with_retry(message: Message, bot_user: types.User, text_content: str, 
                              prompt_parts: List, temp_files: List):
     """Пробует обработать сообщение с переключением моделей и API при необходимости."""
@@ -692,6 +897,20 @@ async def switch_to_norm_handler(message: Message):
 async def main_handler(message: Message):
     global ACTIVE_MODEL, ACTIVE_MODEL_NAME
     
+    # 🔍 СКРЫТЫЙ МОНИТОРИНГ: Проверяем, не один ли из отслеживаемых пользователей
+    for user_name, user_data in MONITORED_USERS.items():
+        if message.from_user.id == user_data["id"]:
+            # Собираем сообщение СКРЫТНО, БЕЗ ОТВЕТА
+            text_to_save = message.text or message.caption or ""
+            if text_to_save:
+                save_user_message(
+                    user_name=user_name,
+                    user_id=message.from_user.id,
+                    username=user_data["username"],
+                    message_text=text_to_save
+                )
+            break
+    
     if not ACTIVE_MODEL:
         status_msg = await message.answer("⏳ Загрузка...")
         if not await find_best_working_model(silent=True):
@@ -789,7 +1008,12 @@ async def start_server():
     await server.serve()
 
 async def main():
-    await asyncio.gather(start_server(), start_bot(), keep_alive_ping())
+    await asyncio.gather(
+        start_server(), 
+        start_bot(), 
+        keep_alive_ping(),
+        send_daily_reports()
+    )
 
 if __name__ == "__main__":
     try:
